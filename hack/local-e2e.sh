@@ -32,8 +32,8 @@ if [ -z "${SUITE}" ]; then
 fi
 
 VERSION=$(cat VERSION)
-if ! docker image inspect "cloudyfolks-labs/fabric:${VERSION}" >/dev/null 2>&1; then
-  echo "cloudyfolks-labs/fabric:${VERSION} is not built; run make image-fabric-arm64 (or image-fabric)" >&2
+if ! docker image inspect "cloudyfolks-io/fabric:${VERSION}" >/dev/null 2>&1; then
+  echo "cloudyfolks-io/fabric:${VERSION} is not built; run make image-fabric-arm64 (or image-fabric)" >&2
   exit 1
 fi
 

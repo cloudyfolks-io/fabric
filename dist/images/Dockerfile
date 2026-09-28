@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 ARG VERSION=latest
 ARG BASE_TAG=$VERSION
-ARG BASE_IMAGE=ghcr.io/cloudyfolks-labs/fabric-base
+ARG BASE_IMAGE=ghcr.io/cloudyfolks-io/fabric-base
 FROM $BASE_IMAGE:$BASE_TAG AS setcap
 
 COPY *.sh /fabric/

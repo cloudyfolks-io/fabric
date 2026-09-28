@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REGISTRY="ghcr.io/cloudyfolks-labs"
+REGISTRY="ghcr.io/cloudyfolks-io"
 VERSION="v1.2.1"
 
 DEL_NON_HOST_NET_POD=${DEL_NON_HOST_NET_POD:-true}

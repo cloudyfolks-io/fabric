@@ -89,7 +89,7 @@ networking:
 
 ```bash
 kubectl --context=mgmt create namespace hcp
-helm install --kube-context=mgmt fabric oci://ghcr.io/cloudyfolks-labs/charts/fabric \
+helm install --kube-context=mgmt fabric oci://ghcr.io/cloudyfolks-io/charts/fabric \
   --version 1.2.1 -n kube-system -f mgmt-values.yaml
 ```
 
@@ -153,7 +153,7 @@ networking:
 ```
 
 ```bash
-helm install --kube-context=tenant fabric oci://ghcr.io/cloudyfolks-labs/charts/fabric \
+helm install --kube-context=tenant fabric oci://ghcr.io/cloudyfolks-io/charts/fabric \
   --version 1.2.1 -n kube-system -f tenant-values.yaml
 ```
 
