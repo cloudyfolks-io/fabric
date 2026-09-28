@@ -16,8 +16,8 @@ keywords:
   - vpc
   - bgp
 maintainers:
-  - name: cloudyfolks-labs
-    url: https://github.com/cloudyfolks-labs
+  - name: cloudyfolks-io
+    url: https://github.com/cloudyfolks-io
 dependencies:
   - name: fabric-crds
     version: 1.2.1

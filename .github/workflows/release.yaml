@@ -11,7 +11,7 @@ permissions:
   packages: write
 
 env:
-  REGISTRY: ghcr.io/cloudyfolks-labs
+  REGISTRY: ghcr.io/cloudyfolks-io
 
 jobs:
   base-amd64:

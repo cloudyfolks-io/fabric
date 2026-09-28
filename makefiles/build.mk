@@ -1,4 +1,4 @@
-BASE_REGISTRY ?= ghcr.io/cloudyfolks-labs
+BASE_REGISTRY ?= ghcr.io/cloudyfolks-io
 BASE_IMAGE = $(BASE_REGISTRY)/fabric-base
 
 COMMIT = git-$(shell git rev-parse --short HEAD)
