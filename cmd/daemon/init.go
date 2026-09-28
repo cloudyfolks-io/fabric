@@ -5,8 +5,8 @@ import (
 	"k8s.io/klog/v2"
 	"kernel.org/pub/linux/libs/security/libcap/cap"
 
-	"github.com/cloudyfolks-labs/fabric/pkg/daemon"
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
+	"github.com/cloudyfolks-io/fabric/pkg/daemon"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
 )
 
 func printCaps() {

@@ -8,8 +8,8 @@ import (
 	"github.com/ovn-kubernetes/libovsdb/model"
 	"k8s.io/klog/v2"
 
-	ovsclient "github.com/cloudyfolks-labs/fabric/pkg/ovsdb/client"
-	"github.com/cloudyfolks-labs/fabric/pkg/ovsdb/vswitch"
+	ovsclient "github.com/cloudyfolks-io/fabric/pkg/ovsdb/client"
+	"github.com/cloudyfolks-io/fabric/pkg/ovsdb/vswitch"
 )
 
 type VswitchClient struct {

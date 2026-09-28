@@ -19,9 +19,9 @@ limitations under the License.
 package fake
 
 import (
-	v1 "github.com/cloudyfolks-labs/fabric/pkg/apis/fabric/v1"
-	fabricv1 "github.com/cloudyfolks-labs/fabric/pkg/client/applyconfiguration/fabric/v1"
-	typedfabricv1 "github.com/cloudyfolks-labs/fabric/pkg/client/clientset/versioned/typed/fabric/v1"
+	v1 "github.com/cloudyfolks-io/fabric/pkg/apis/fabric/v1"
+	fabricv1 "github.com/cloudyfolks-io/fabric/pkg/client/applyconfiguration/fabric/v1"
+	typedfabricv1 "github.com/cloudyfolks-io/fabric/pkg/client/clientset/versioned/typed/fabric/v1"
 	gentype "k8s.io/client-go/gentype"
 )
 

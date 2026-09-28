@@ -7,8 +7,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/cloudyfolks-labs/fabric/pkg/ovsdb/ovnnb"
-	"github.com/cloudyfolks-labs/fabric/pkg/ovsdb/ovnsb"
+	"github.com/cloudyfolks-io/fabric/pkg/ovsdb/ovnnb"
+	"github.com/cloudyfolks-io/fabric/pkg/ovsdb/ovnsb"
 )
 
 const (

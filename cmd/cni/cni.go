@@ -12,11 +12,11 @@ import (
 	current "github.com/containernetworking/cni/pkg/types/100"
 	"github.com/containernetworking/cni/pkg/version"
 
-	fabricv1 "github.com/cloudyfolks-labs/fabric/pkg/apis/fabric/v1"
-	"github.com/cloudyfolks-labs/fabric/pkg/netconf"
-	"github.com/cloudyfolks-labs/fabric/pkg/request"
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
-	"github.com/cloudyfolks-labs/fabric/versions"
+	fabricv1 "github.com/cloudyfolks-io/fabric/pkg/apis/fabric/v1"
+	"github.com/cloudyfolks-io/fabric/pkg/netconf"
+	"github.com/cloudyfolks-io/fabric/pkg/request"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
+	"github.com/cloudyfolks-io/fabric/versions"
 )
 
 func main() {

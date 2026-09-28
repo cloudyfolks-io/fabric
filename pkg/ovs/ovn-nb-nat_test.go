@@ -5,9 +5,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	fabricv1 "github.com/cloudyfolks-labs/fabric/pkg/apis/fabric/v1"
-	ovsclient "github.com/cloudyfolks-labs/fabric/pkg/ovsdb/client"
-	"github.com/cloudyfolks-labs/fabric/pkg/ovsdb/ovnnb"
+	fabricv1 "github.com/cloudyfolks-io/fabric/pkg/apis/fabric/v1"
+	ovsclient "github.com/cloudyfolks-io/fabric/pkg/ovsdb/client"
+	"github.com/cloudyfolks-io/fabric/pkg/ovsdb/ovnnb"
 )
 
 func newNat(natType, externalIP, logicalIP string, options ...func(nat *ovnnb.NAT)) *ovnnb.NAT {

@@ -38,13 +38,13 @@ import (
 	anplister "sigs.k8s.io/network-policy-api/pkg/client/listers/apis/v1alpha1"
 	anplisterv1alpha2 "sigs.k8s.io/network-policy-api/pkg/client/listers/apis/v1alpha2"
 
-	fabricv1 "github.com/cloudyfolks-labs/fabric/pkg/apis/fabric/v1"
-	fabricinformer "github.com/cloudyfolks-labs/fabric/pkg/client/informers/externalversions"
-	fabriclister "github.com/cloudyfolks-labs/fabric/pkg/client/listers/fabric/v1"
-	"github.com/cloudyfolks-labs/fabric/pkg/informer"
-	ovnipam "github.com/cloudyfolks-labs/fabric/pkg/ipam"
-	"github.com/cloudyfolks-labs/fabric/pkg/ovs"
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
+	fabricv1 "github.com/cloudyfolks-io/fabric/pkg/apis/fabric/v1"
+	fabricinformer "github.com/cloudyfolks-io/fabric/pkg/client/informers/externalversions"
+	fabriclister "github.com/cloudyfolks-io/fabric/pkg/client/listers/fabric/v1"
+	"github.com/cloudyfolks-io/fabric/pkg/informer"
+	ovnipam "github.com/cloudyfolks-io/fabric/pkg/ipam"
+	"github.com/cloudyfolks-io/fabric/pkg/ovs"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
 )
 
 const controllerAgentName = "fabric-controller"

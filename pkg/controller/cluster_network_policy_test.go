@@ -3,15 +3,15 @@ package controller
 import (
 	"testing"
 
-	fabricv1 "github.com/cloudyfolks-labs/fabric/pkg/apis/fabric/v1"
+	fabricv1 "github.com/cloudyfolks-io/fabric/pkg/apis/fabric/v1"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/stretchr/testify/require"
 	"sigs.k8s.io/network-policy-api/apis/v1alpha2"
 
-	"github.com/cloudyfolks-labs/fabric/pkg/ovsdb/ovnnb"
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
+	"github.com/cloudyfolks-io/fabric/pkg/ovsdb/ovnnb"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
 )
 
 func TestGetCnpPortGroupName(t *testing.T) {

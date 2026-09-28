@@ -8,7 +8,7 @@ import (
 
 	"k8s.io/klog/v2"
 
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
 )
 
 func computeIngressPolicingBurstKbit(rateKbit int64, burstMbit string) int64 {
@@ -164,7 +164,7 @@ func ClearHtbQosQueue(podName, podNamespace, iface string) error {
 		}
 	}
 
-	// https://github.com/cloudyfolks-labs/fabric/issues/1191
+	// https://github.com/cloudyfolks-io/fabric/issues/1191
 	qosQueueMap, err := ListQosQueueIDs()
 	if err != nil {
 		klog.Error(err)

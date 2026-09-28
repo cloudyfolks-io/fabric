@@ -8,7 +8,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/util/uuid"
 
-	"github.com/cloudyfolks-labs/fabric/pkg/ovsdb/ovnnb"
+	"github.com/cloudyfolks-io/fabric/pkg/ovsdb/ovnnb"
 )
 
 func (suite *OvnClientTestSuite) testCreateBFD() {

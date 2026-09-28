@@ -13,8 +13,8 @@ import (
 
 	"github.com/onsi/ginkgo/v2"
 
-	"github.com/cloudyfolks-labs/fabric/pkg/ipam"
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
+	"github.com/cloudyfolks-io/fabric/pkg/ipam"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
 )
 
 const (

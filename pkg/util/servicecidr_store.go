@@ -10,7 +10,7 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	fabricv1 "github.com/cloudyfolks-labs/fabric/pkg/apis/fabric/v1"
+	fabricv1 "github.com/cloudyfolks-io/fabric/pkg/apis/fabric/v1"
 )
 
 func ReadyServiceCIDRs(sc *networkingv1.ServiceCIDR) []string {

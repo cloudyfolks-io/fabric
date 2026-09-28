@@ -7,7 +7,7 @@ import (
 	"github.com/vishvananda/netlink"
 	"k8s.io/klog/v2"
 
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
 )
 
 var routeScopeOrders = [...]netlink.Scope{

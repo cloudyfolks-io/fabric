@@ -9,9 +9,9 @@ import (
 	"github.com/ovn-kubernetes/libovsdb/model"
 	"github.com/ovn-kubernetes/libovsdb/ovsdb"
 
-	ovsclient "github.com/cloudyfolks-labs/fabric/pkg/ovsdb/client"
-	"github.com/cloudyfolks-labs/fabric/pkg/ovsdb/ovnnb"
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
+	ovsclient "github.com/cloudyfolks-io/fabric/pkg/ovsdb/client"
+	"github.com/cloudyfolks-io/fabric/pkg/ovsdb/ovnnb"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
 )
 
 func (c *OVNNbClient) GetMeter(name string, ignoreNotFound bool) (*ovnnb.Meter, error) {

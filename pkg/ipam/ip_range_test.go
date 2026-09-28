@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/cloudyfolks-labs/fabric/pkg/internal"
+	"github.com/cloudyfolks-io/fabric/pkg/internal"
 )
 
 func TestNewIPRange(t *testing.T) {

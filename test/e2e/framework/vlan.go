@@ -11,10 +11,10 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 
-	apiv1 "github.com/cloudyfolks-labs/fabric/pkg/apis/fabric/v1"
-	clientset "github.com/cloudyfolks-labs/fabric/pkg/client/clientset/versioned"
-	v1 "github.com/cloudyfolks-labs/fabric/pkg/client/clientset/versioned/typed/fabric/v1"
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
+	apiv1 "github.com/cloudyfolks-io/fabric/pkg/apis/fabric/v1"
+	clientset "github.com/cloudyfolks-io/fabric/pkg/client/clientset/versioned"
+	v1 "github.com/cloudyfolks-io/fabric/pkg/client/clientset/versioned/typed/fabric/v1"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
 )
 
 type VlanClient struct {

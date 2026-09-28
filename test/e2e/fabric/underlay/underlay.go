@@ -26,14 +26,14 @@ import (
 
 	nadv1 "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
 
-	apiv1 "github.com/cloudyfolks-labs/fabric/pkg/apis/fabric/v1"
-	"github.com/cloudyfolks-labs/fabric/pkg/ipam"
-	"github.com/cloudyfolks-labs/fabric/pkg/ovs"
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
-	"github.com/cloudyfolks-labs/fabric/test/e2e/framework"
-	"github.com/cloudyfolks-labs/fabric/test/e2e/framework/docker"
-	"github.com/cloudyfolks-labs/fabric/test/e2e/framework/iproute"
-	"github.com/cloudyfolks-labs/fabric/test/e2e/framework/kind"
+	apiv1 "github.com/cloudyfolks-io/fabric/pkg/apis/fabric/v1"
+	"github.com/cloudyfolks-io/fabric/pkg/ipam"
+	"github.com/cloudyfolks-io/fabric/pkg/ovs"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
+	"github.com/cloudyfolks-io/fabric/test/e2e/framework"
+	"github.com/cloudyfolks-io/fabric/test/e2e/framework/docker"
+	"github.com/cloudyfolks-io/fabric/test/e2e/framework/iproute"
+	"github.com/cloudyfolks-io/fabric/test/e2e/framework/kind"
 )
 
 const (

@@ -9,8 +9,8 @@ import (
 	goping "github.com/prometheus-community/pro-bing"
 	"k8s.io/klog/v2"
 
-	"github.com/cloudyfolks-labs/fabric/pkg/ovs"
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
+	"github.com/cloudyfolks-io/fabric/pkg/ovs"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
 )
 
 const gatewayCheckMaxRetry = 200
