@@ -6,7 +6,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	fabricv1 "github.com/cloudyfolks-labs/fabric/pkg/apis/fabric/v1"
+	fabricv1 "github.com/cloudyfolks-io/fabric/pkg/apis/fabric/v1"
 )
 
 func TestProtocolToFamily(t *testing.T) {

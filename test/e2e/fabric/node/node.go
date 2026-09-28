@@ -19,10 +19,10 @@ import (
 
 	"github.com/onsi/ginkgo/v2"
 
-	apiv1 "github.com/cloudyfolks-labs/fabric/pkg/apis/fabric/v1"
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
-	"github.com/cloudyfolks-labs/fabric/test/e2e/framework"
-	"github.com/cloudyfolks-labs/fabric/test/e2e/framework/iproute"
+	apiv1 "github.com/cloudyfolks-io/fabric/pkg/apis/fabric/v1"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
+	"github.com/cloudyfolks-io/fabric/test/e2e/framework"
+	"github.com/cloudyfolks-io/fabric/test/e2e/framework/iproute"
 )
 
 var _ = framework.OrderedDescribe("[group:node]", func() {

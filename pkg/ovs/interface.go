@@ -8,11 +8,11 @@ import (
 	v1alpha1 "sigs.k8s.io/network-policy-api/apis/v1alpha1"
 	v1alpha2 "sigs.k8s.io/network-policy-api/apis/v1alpha2"
 
-	fabricv1 "github.com/cloudyfolks-labs/fabric/pkg/apis/fabric/v1"
-	"github.com/cloudyfolks-labs/fabric/pkg/ovsdb/ovnnb"
-	"github.com/cloudyfolks-labs/fabric/pkg/ovsdb/ovnsb"
-	"github.com/cloudyfolks-labs/fabric/pkg/ovsdb/vswitch"
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
+	fabricv1 "github.com/cloudyfolks-io/fabric/pkg/apis/fabric/v1"
+	"github.com/cloudyfolks-io/fabric/pkg/ovsdb/ovnnb"
+	"github.com/cloudyfolks-io/fabric/pkg/ovsdb/ovnsb"
+	"github.com/cloudyfolks-io/fabric/pkg/ovsdb/vswitch"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
 )
 
 type Vswitch interface {

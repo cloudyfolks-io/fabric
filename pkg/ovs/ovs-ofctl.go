@@ -9,7 +9,7 @@ import (
 	"github.com/digitalocean/go-openvswitch/ovs"
 	"k8s.io/klog/v2"
 
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
 )
 
 func DumpFlows(client *ovs.Client, bridgeName string) ([]string, error) {

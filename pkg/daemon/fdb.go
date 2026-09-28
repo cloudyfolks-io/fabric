@@ -12,9 +12,9 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/klog/v2"
 
-	"github.com/cloudyfolks-labs/fabric/pkg/ovs"
-	"github.com/cloudyfolks-labs/fabric/pkg/ovsdb/vswitch"
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
+	"github.com/cloudyfolks-io/fabric/pkg/ovs"
+	"github.com/cloudyfolks-io/fabric/pkg/ovsdb/vswitch"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
 )
 
 const fdbSyncPeriod = 100 * time.Second

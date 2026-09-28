@@ -6,8 +6,8 @@ import (
 
 	"k8s.io/klog/v2"
 
-	"github.com/cloudyfolks-labs/fabric/pkg/ovsdb/vswitch"
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
+	"github.com/cloudyfolks-io/fabric/pkg/ovsdb/vswitch"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
 )
 
 func (c *VswitchClient) ListBridge(needVendorFilter bool, filter func(bridge *vswitch.Bridge) bool) ([]vswitch.Bridge, error) {

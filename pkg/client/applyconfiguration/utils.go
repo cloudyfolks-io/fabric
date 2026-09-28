@@ -19,9 +19,9 @@ limitations under the License.
 package applyconfiguration
 
 import (
-	v1 "github.com/cloudyfolks-labs/fabric/pkg/apis/fabric/v1"
-	fabricv1 "github.com/cloudyfolks-labs/fabric/pkg/client/applyconfiguration/fabric/v1"
-	internal "github.com/cloudyfolks-labs/fabric/pkg/client/applyconfiguration/internal"
+	v1 "github.com/cloudyfolks-io/fabric/pkg/apis/fabric/v1"
+	fabricv1 "github.com/cloudyfolks-io/fabric/pkg/client/applyconfiguration/fabric/v1"
+	internal "github.com/cloudyfolks-io/fabric/pkg/client/applyconfiguration/internal"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	schema "k8s.io/apimachinery/pkg/runtime/schema"
 	managedfields "k8s.io/apimachinery/pkg/util/managedfields"

@@ -22,7 +22,7 @@ import (
 	"go.uber.org/zap/zapcore"
 	"k8s.io/klog/v2"
 
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
 )
 
 var namedUUIDCounter uint32

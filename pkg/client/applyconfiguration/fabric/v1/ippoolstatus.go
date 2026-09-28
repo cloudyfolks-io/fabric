@@ -19,7 +19,7 @@ limitations under the License.
 package v1
 
 import (
-	internal "github.com/cloudyfolks-labs/fabric/pkg/internal"
+	internal "github.com/cloudyfolks-io/fabric/pkg/internal"
 )
 
 // IPPoolStatusApplyConfiguration represents a declarative configuration of the IPPoolStatus type for use

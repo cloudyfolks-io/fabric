@@ -13,10 +13,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/manager/signals"
 
-	"github.com/cloudyfolks-labs/fabric/pkg/metrics"
-	ovn "github.com/cloudyfolks-labs/fabric/pkg/ovnmonitor"
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
-	"github.com/cloudyfolks-labs/fabric/versions"
+	"github.com/cloudyfolks-io/fabric/pkg/metrics"
+	ovn "github.com/cloudyfolks-io/fabric/pkg/ovnmonitor"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
+	"github.com/cloudyfolks-io/fabric/versions"
 )
 
 func CmdMain() {

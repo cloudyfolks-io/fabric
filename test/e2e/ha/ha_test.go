@@ -22,10 +22,10 @@ import (
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega/format"
 
-	"github.com/cloudyfolks-labs/fabric/pkg/ovsdb/ovnnb"
-	"github.com/cloudyfolks-labs/fabric/pkg/ovsdb/ovnsb"
-	"github.com/cloudyfolks-labs/fabric/test/e2e/framework"
-	"github.com/cloudyfolks-labs/fabric/test/e2e/framework/kind"
+	"github.com/cloudyfolks-io/fabric/pkg/ovsdb/ovnnb"
+	"github.com/cloudyfolks-io/fabric/pkg/ovsdb/ovnsb"
+	"github.com/cloudyfolks-io/fabric/test/e2e/framework"
+	"github.com/cloudyfolks-io/fabric/test/e2e/framework/kind"
 )
 
 func init() {

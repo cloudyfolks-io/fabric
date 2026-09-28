@@ -9,9 +9,9 @@ import (
 	"github.com/kubeovn/ovsdb"
 	"k8s.io/klog/v2"
 
-	"github.com/cloudyfolks-labs/fabric/pkg/ovsdb/ovnnb"
-	"github.com/cloudyfolks-labs/fabric/pkg/ovsdb/ovnsb"
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
+	"github.com/cloudyfolks-io/fabric/pkg/ovsdb/ovnnb"
+	"github.com/cloudyfolks-io/fabric/pkg/ovsdb/ovnsb"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
 )
 
 const metricNamespace = "kube_ovn"

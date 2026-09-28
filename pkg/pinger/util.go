@@ -10,7 +10,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"k8s.io/klog/v2"
 
-	"github.com/cloudyfolks-labs/fabric/pkg/ovs"
+	"github.com/cloudyfolks-io/fabric/pkg/ovs"
 )
 
 func (e *Exporter) IncrementErrorCounter() {

@@ -8,9 +8,9 @@ import (
 	"kernel.org/pub/linux/libs/security/libcap/cap"
 	"sigs.k8s.io/controller-runtime/pkg/manager/signals"
 
-	"github.com/cloudyfolks-labs/fabric/pkg/ovn_ic_controller"
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
-	"github.com/cloudyfolks-labs/fabric/versions"
+	"github.com/cloudyfolks-io/fabric/pkg/ovn_ic_controller"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
+	"github.com/cloudyfolks-io/fabric/versions"
 )
 
 func CmdMain() {

@@ -11,9 +11,9 @@ import (
 	"k8s.io/klog/v2"
 	"k8s.io/utils/set"
 
-	"github.com/cloudyfolks-labs/fabric/pkg/ovs"
-	"github.com/cloudyfolks-labs/fabric/pkg/ovsdb/ovnsb"
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
+	"github.com/cloudyfolks-io/fabric/pkg/ovs"
+	"github.com/cloudyfolks-io/fabric/pkg/ovsdb/ovnsb"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
 )
 
 var sbServiceAddress string

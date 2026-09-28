@@ -13,8 +13,8 @@ import (
 	"github.com/scylladb/go-set/strset"
 	"k8s.io/klog/v2"
 
-	"github.com/cloudyfolks-labs/fabric/pkg/ovsdb/ovnnb"
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
+	"github.com/cloudyfolks-io/fabric/pkg/ovsdb/ovnnb"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
 )
 
 func (c *OVNNbClient) CreateAddressSet(asName string, externalIDs map[string]string) error {

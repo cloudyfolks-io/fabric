@@ -6,7 +6,7 @@ import (
 	"math/big"
 	"net"
 
-	"github.com/cloudyfolks-labs/fabric/pkg/internal"
+	"github.com/cloudyfolks-io/fabric/pkg/internal"
 )
 
 type IPRange struct {

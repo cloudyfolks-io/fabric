@@ -1,6 +1,6 @@
 .PHONY: ut
 ut:
-	go test -coverprofile=profile.cov $$(go list ./pkg/... | grep -vw '^github.com/cloudyfolks-labs/fabric/pkg/client')
+	go test -coverprofile=profile.cov $$(go list ./pkg/... | grep -vw '^github.com/cloudyfolks-io/fabric/pkg/client')
 
 .PHONY: ovs-sandbox
 ovs-sandbox: clean-ovs-sandbox

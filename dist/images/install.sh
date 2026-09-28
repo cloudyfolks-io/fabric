@@ -5942,5 +5942,5 @@ echo "
                     ,,::,
 "
 echo "Thank you for choosing fabric!
-Read the documentation at https://github.com/cloudyfolks-labs/fabric
-If you have any question, please file an issue https://github.com/cloudyfolks-labs/fabric/issues/new/choose"
+Read the documentation at https://github.com/cloudyfolks-io/fabric
+If you have any question, please file an issue https://github.com/cloudyfolks-io/fabric/issues/new/choose"

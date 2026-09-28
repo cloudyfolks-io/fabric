@@ -18,12 +18,12 @@ import (
 	listerv1 "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 
-	fabricv1 "github.com/cloudyfolks-labs/fabric/pkg/apis/fabric/v1"
-	fabricfake "github.com/cloudyfolks-labs/fabric/pkg/client/clientset/versioned/fake"
-	fabriclister "github.com/cloudyfolks-labs/fabric/pkg/client/listers/fabric/v1"
-	"github.com/cloudyfolks-labs/fabric/pkg/ovs"
-	"github.com/cloudyfolks-labs/fabric/pkg/request"
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
+	fabricv1 "github.com/cloudyfolks-io/fabric/pkg/apis/fabric/v1"
+	fabricfake "github.com/cloudyfolks-io/fabric/pkg/client/clientset/versioned/fake"
+	fabriclister "github.com/cloudyfolks-io/fabric/pkg/client/listers/fabric/v1"
+	"github.com/cloudyfolks-io/fabric/pkg/ovs"
+	"github.com/cloudyfolks-io/fabric/pkg/request"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
 )
 
 type recordedCNIEvent struct {

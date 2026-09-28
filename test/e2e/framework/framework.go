@@ -21,8 +21,8 @@ import (
 	"kubevirt.io/client-go/kubecli"
 	anpclient "sigs.k8s.io/network-policy-api/pkg/client/clientset/versioned"
 
-	fabriccs "github.com/cloudyfolks-labs/fabric/pkg/client/clientset/versioned"
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
+	fabriccs "github.com/cloudyfolks-io/fabric/pkg/client/clientset/versioned"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
 )
 
 const (
