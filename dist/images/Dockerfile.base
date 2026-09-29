@@ -203,7 +203,8 @@ ARG ARCH
 ARG CNI_PLUGINS_VERSION=v1.9.1
 # renovate: datasource=github-releases depName=kubectl packageName=kubernetes/kubernetes versioning=semver
 ARG KUBECTL_VERSION=v1.36.3
-ARG TRIVY_DB_REPOSITORY="public.ecr.aws/aquasecurity/trivy-db:2"
+ARG TRIVY_DB_REPOSITORY="ghcr.io/aquasecurity/trivy-db:2,public.ecr.aws/aquasecurity/trivy-db:2"
+ENV TRIVY_DB_REPOSITORY=$TRIVY_DB_REPOSITORY
 
 RUN apk --no-cache add curl jq
 ADD go-deps/download-go-deps.sh /

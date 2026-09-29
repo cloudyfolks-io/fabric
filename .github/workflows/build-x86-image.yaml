@@ -188,7 +188,7 @@ jobs:
             prNumber="$PR_NUMBER"
           elif [ "$EVENT_NAME" = workflow_dispatch ]; then
             gh api "repos/$GITHUB_REPOSITORY/pulls/$INPUT_PR_NUMBER" > pull-request.json
-            python3 - "$INPUT_HEAD_SHA" "$INPUT_BASE_SHA" "$GITHUB_REF_NAME" "$GITHUB_SHA" <<'PY'
+            python3 - "$INPUT_HEAD_SHA" "$INPUT_BASE_SHA" "$GITHUB_REF_NAME" "$GITHUB_SHA" "$INPUT_PR_NUMBER" <<'PY'
           import json
           import re
           import sys
@@ -203,8 +203,8 @@ jobs:
               raise SystemExit("pull request HEAD changed; dispatch again")
           if pullRequest["base"]["sha"] != sys.argv[2]:
               raise SystemExit("pull request base revision changed; dispatch again")
-          if pullRequest["base"]["ref"] != sys.argv[3]:
-              raise SystemExit("executor must run from the pull request base branch")
+          if not re.fullmatch(rf"x86-e2e/pr-{sys.argv[5]}-a-[0-9]+-d-[0-9]+", sys.argv[3]):
+              raise SystemExit("executor must run from its dispatched isolated ref")
           if sys.argv[4] != sys.argv[2]:
               raise SystemExit("executor workflow revision does not match the approved base")
           pullRequest["labels"] = []
@@ -638,7 +638,7 @@ jobs:
       - name: Scan base image
         uses: aquasecurity/trivy-action@v0.36.0
         env:
-          TRIVY_DB_REPOSITORY: public.ecr.aws/aquasecurity/trivy-db:2
+          TRIVY_DB_REPOSITORY: ghcr.io/aquasecurity/trivy-db:2,public.ecr.aws/aquasecurity/trivy-db:2
         with:
           scan-type: image
           scanners: vuln
@@ -2455,7 +2455,7 @@ jobs:
       - build-fabric
       - build-e2e-binaries
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - name: Free disk space
         run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
