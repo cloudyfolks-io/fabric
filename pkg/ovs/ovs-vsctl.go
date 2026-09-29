@@ -14,7 +14,7 @@ import (
 	"k8s.io/klog/v2"
 	"k8s.io/utils/set"
 
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
 )
 
 var limiter = new(Limiter)
@@ -226,7 +226,7 @@ func ClearPodBandwidth(podName, podNamespace, ifaceID string) error {
 		return err
 	}
 
-	// https://github.com/cloudyfolks-labs/fabric/issues/1191
+	// https://github.com/cloudyfolks-io/fabric/issues/1191
 	usedQosList, err := ovsFind("port", "qos", "qos!=[]")
 	if err != nil {
 		klog.Error(err)

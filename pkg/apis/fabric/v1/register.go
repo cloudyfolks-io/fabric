@@ -5,7 +5,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
-	"github.com/cloudyfolks-labs/fabric/pkg/apis/fabric"
+	"github.com/cloudyfolks-io/fabric/pkg/apis/fabric"
 )
 
 // SchemeGroupVersion is group version used to register these objects

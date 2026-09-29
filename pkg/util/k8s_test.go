@@ -25,7 +25,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	fabricv1 "github.com/cloudyfolks-labs/fabric/pkg/apis/fabric/v1"
+	fabricv1 "github.com/cloudyfolks-io/fabric/pkg/apis/fabric/v1"
 )
 
 func TestObjectMatchesLabelSelector(t *testing.T) {

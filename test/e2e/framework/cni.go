@@ -9,9 +9,9 @@ import (
 
 	"github.com/onsi/ginkgo/v2"
 
-	"github.com/cloudyfolks-labs/fabric/pkg/netconf"
-	"github.com/cloudyfolks-labs/fabric/pkg/request"
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
+	"github.com/cloudyfolks-io/fabric/pkg/netconf"
+	"github.com/cloudyfolks-io/fabric/pkg/request"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
 )
 
 const CNIVersion = "0.3.1"

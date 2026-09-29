@@ -14,9 +14,9 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
 
-	fabricv1 "github.com/cloudyfolks-labs/fabric/pkg/apis/fabric/v1"
-	fabriclisters "github.com/cloudyfolks-labs/fabric/pkg/client/listers/fabric/v1"
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
+	fabricv1 "github.com/cloudyfolks-io/fabric/pkg/apis/fabric/v1"
+	fabriclisters "github.com/cloudyfolks-io/fabric/pkg/client/listers/fabric/v1"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
 )
 
 type errorVlanLister struct {

@@ -363,7 +363,7 @@ jobs:
         run: |
           base_tag=$(cat BASE_VERSION)
           for tag in "$base_tag" "$base_tag-debug" "$base_tag-amd64-legacy"; do
-            if ! docker manifest inspect "ghcr.io/cloudyfolks-labs/fabric-base:$tag" >/dev/null 2>&1; then
+            if ! docker manifest inspect "ghcr.io/cloudyfolks-io/fabric-base:$tag" >/dev/null 2>&1; then
               echo build-base=1 >> "$GITHUB_OUTPUT"
               exit
             fi
@@ -432,7 +432,7 @@ jobs:
 
       - id: check
         run: |
-          if ! docker manifest inspect "ghcr.io/cloudyfolks-labs/fabric-base:$(cat BASE_VERSION)-dpdk" >/dev/null 2>&1; then
+          if ! docker manifest inspect "ghcr.io/cloudyfolks-io/fabric-base:$(cat BASE_VERSION)-dpdk" >/dev/null 2>&1; then
             echo build-dpdk-base=1 >> "$GITHUB_OUTPUT"
             exit
           fi
@@ -558,7 +558,7 @@ jobs:
         if: needs.build-fabric-dpdk-base.outputs.build-dpdk-base == 1
         run: |
           docker load --input image-amd64-dpdk.tar
-          docker tag ghcr.io/cloudyfolks-labs/fabric-base:$TAG-amd64-dpdk ghcr.io/cloudyfolks-labs/fabric-base:$TAG-dpdk
+          docker tag ghcr.io/cloudyfolks-io/fabric-base:$TAG-amd64-dpdk ghcr.io/cloudyfolks-io/fabric-base:$TAG-dpdk
 
       - name: Pull dpdk base image
         if: needs.build-fabric-dpdk-base.outputs.build-dpdk-base != 1
@@ -628,8 +628,8 @@ jobs:
         if: needs.build-fabric-base.outputs.build-base == 1
         run: |
           docker load --input image-amd64.tar
-          docker tag ghcr.io/cloudyfolks-labs/fabric-base:$TAG-amd64 ghcr.io/cloudyfolks-labs/fabric-base:$TAG
-          docker tag ghcr.io/cloudyfolks-labs/fabric-base:$TAG-debug-amd64 ghcr.io/cloudyfolks-labs/fabric-base:$TAG-debug
+          docker tag ghcr.io/cloudyfolks-io/fabric-base:$TAG-amd64 ghcr.io/cloudyfolks-io/fabric-base:$TAG
+          docker tag ghcr.io/cloudyfolks-io/fabric-base:$TAG-debug-amd64 ghcr.io/cloudyfolks-io/fabric-base:$TAG-debug
 
       - name: Pull base images
         if: needs.build-fabric-base.outputs.build-base != 1
@@ -642,7 +642,7 @@ jobs:
         with:
           scan-type: image
           scanners: vuln
-          image-ref: ghcr.io/cloudyfolks-labs/fabric-base:${{ env.TAG }}
+          image-ref: ghcr.io/cloudyfolks-io/fabric-base:${{ env.TAG }}
           format: json
           output: trivy-result.json
           ignore-unfixed: true
@@ -2117,7 +2117,7 @@ jobs:
       - name: Load image
         run: |
           docker load --input fabric.tar
-          docker tag "ghcr.io/cloudyfolks-labs/fabric:$(cat VERSION)" ghcr.io/cloudyfolks-labs/fabric:dev
+          docker tag "ghcr.io/cloudyfolks-io/fabric:$(cat VERSION)" ghcr.io/cloudyfolks-io/fabric:dev
 
       - name: Verify hosted OVN central values
         run: bash hack/kamaji-e2e-test.sh

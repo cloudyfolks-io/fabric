@@ -29,9 +29,9 @@ import (
 	k8sipset "k8s.io/kubernetes/pkg/proxy/ipvs/ipset"
 	k8siptables "k8s.io/kubernetes/pkg/util/iptables"
 
-	fabricv1 "github.com/cloudyfolks-labs/fabric/pkg/apis/fabric/v1"
-	"github.com/cloudyfolks-labs/fabric/pkg/ovs"
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
+	fabricv1 "github.com/cloudyfolks-io/fabric/pkg/apis/fabric/v1"
+	"github.com/cloudyfolks-io/fabric/pkg/ovs"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
 )
 
 const (

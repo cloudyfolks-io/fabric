@@ -12,7 +12,7 @@ VALUES=charts/fabric/values.yaml
 
 awk -v version="${VERSION}" '
   /^    fabric:$/ { pending = "      " }
-  /^    repository: ghcr.io\/cloudyfolks-labs\/vpc-nat-gateway$/ { pending = "    " }
+  /^    repository: ghcr.io\/cloudyfolks-io\/vpc-nat-gateway$/ { pending = "    " }
   /^    # -- DPDK image tag.$/ { pending = "    " }
   pending != "" && index($0, pending "tag: ") == 1 { sub(/tag: .*/, "tag: " version); pending = "" }
   { print }

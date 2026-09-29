@@ -5,7 +5,7 @@ import (
 
 	"github.com/containernetworking/cni/pkg/types"
 
-	"github.com/cloudyfolks-labs/fabric/pkg/request"
+	"github.com/cloudyfolks-io/fabric/pkg/request"
 )
 
 type NetConf struct {

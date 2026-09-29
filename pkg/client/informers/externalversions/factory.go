@@ -24,9 +24,9 @@ import (
 	sync "sync"
 	time "time"
 
-	versioned "github.com/cloudyfolks-labs/fabric/pkg/client/clientset/versioned"
-	fabric "github.com/cloudyfolks-labs/fabric/pkg/client/informers/externalversions/fabric"
-	internalinterfaces "github.com/cloudyfolks-labs/fabric/pkg/client/informers/externalversions/internalinterfaces"
+	versioned "github.com/cloudyfolks-io/fabric/pkg/client/clientset/versioned"
+	fabric "github.com/cloudyfolks-io/fabric/pkg/client/informers/externalversions/fabric"
+	internalinterfaces "github.com/cloudyfolks-io/fabric/pkg/client/informers/externalversions/internalinterfaces"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	schema "k8s.io/apimachinery/pkg/runtime/schema"

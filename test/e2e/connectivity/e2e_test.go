@@ -26,10 +26,10 @@ import (
 	"github.com/onsi/gomega"
 	"github.com/onsi/gomega/format"
 
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
-	"github.com/cloudyfolks-labs/fabric/test/e2e/framework"
-	frameworkhttp "github.com/cloudyfolks-labs/fabric/test/e2e/framework/http"
-	"github.com/cloudyfolks-labs/fabric/test/e2e/framework/rpc"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
+	"github.com/cloudyfolks-io/fabric/test/e2e/framework"
+	frameworkhttp "github.com/cloudyfolks-io/fabric/test/e2e/framework/http"
+	"github.com/cloudyfolks-io/fabric/test/e2e/framework/rpc"
 )
 
 const rpcAddr = "127.0.0.1:17070"

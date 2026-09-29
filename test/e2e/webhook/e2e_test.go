@@ -11,9 +11,9 @@ import (
 
 	"github.com/onsi/ginkgo/v2"
 
-	_ "github.com/cloudyfolks-labs/fabric/test/e2e/webhook/pod"
-	_ "github.com/cloudyfolks-labs/fabric/test/e2e/webhook/subnet"
-	_ "github.com/cloudyfolks-labs/fabric/test/e2e/webhook/vip"
+	_ "github.com/cloudyfolks-io/fabric/test/e2e/webhook/pod"
+	_ "github.com/cloudyfolks-io/fabric/test/e2e/webhook/subnet"
+	_ "github.com/cloudyfolks-io/fabric/test/e2e/webhook/vip"
 )
 
 func init() {

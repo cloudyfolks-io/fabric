@@ -17,7 +17,7 @@ import (
 
 	"github.com/onsi/ginkgo/v2"
 
-	"github.com/cloudyfolks-labs/fabric/test/e2e/framework"
+	"github.com/cloudyfolks-io/fabric/test/e2e/framework"
 )
 
 const skipVersionMajor, skipVersionMinor uint = 1, 17

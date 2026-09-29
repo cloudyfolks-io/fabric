@@ -10,10 +10,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 
-	fabricv1 "github.com/cloudyfolks-labs/fabric/pkg/apis/fabric/v1"
-	fabricfake "github.com/cloudyfolks-labs/fabric/pkg/client/clientset/versioned/fake"
-	fabricinformerfactory "github.com/cloudyfolks-labs/fabric/pkg/client/informers/externalversions"
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
+	fabricv1 "github.com/cloudyfolks-io/fabric/pkg/apis/fabric/v1"
+	fabricfake "github.com/cloudyfolks-io/fabric/pkg/client/clientset/versioned/fake"
+	fabricinformerfactory "github.com/cloudyfolks-io/fabric/pkg/client/informers/externalversions"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
 )
 
 type errSubnetLister struct{}

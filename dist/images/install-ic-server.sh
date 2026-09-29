@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REGISTRY="ghcr.io/cloudyfolks-labs"
+REGISTRY="ghcr.io/cloudyfolks-io"
 VERSION="v1.13.0"
 TS_NUM=${TS_NUM:-3}
 IMAGE_PULL_POLICY="IfNotPresent"

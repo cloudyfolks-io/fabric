@@ -1,13 +1,13 @@
 # Release
 
 `.github/workflows/release.yaml` is the only release path. It builds and
-pushes the images to `ghcr.io/cloudyfolks-labs`, packages the Helm chart,
-pushes it to `oci://ghcr.io/cloudyfolks-labs/charts` and makes the GitHub
+pushes the images to `ghcr.io/cloudyfolks-io`, packages the Helm chart,
+pushes it to `oci://ghcr.io/cloudyfolks-io/charts` and makes the GitHub
 release. Nothing is released from a workstation.
 
 ## Base image
 
-`dist/images/Dockerfile` starts from `ghcr.io/cloudyfolks-labs/fabric-base`.
+`dist/images/Dockerfile` starts from `ghcr.io/cloudyfolks-io/fabric-base`.
 The file `BASE_VERSION` holds the tag of that base image. The workflow
 builds the base image from `dist/images/Dockerfile.base` and
 `dist/images/Dockerfile.base-dpdk` when the registry has no image for the

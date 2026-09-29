@@ -9,8 +9,8 @@ import (
 	"github.com/ovn-kubernetes/libovsdb/client"
 	"k8s.io/klog/v2"
 
-	"github.com/cloudyfolks-labs/fabric/pkg/ovsdb/ovnsb"
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
+	"github.com/cloudyfolks-io/fabric/pkg/ovsdb/ovnsb"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
 )
 
 var ErrOneNodeMultiChassis = errors.New("OneNodeMultiChassis")

@@ -6,7 +6,7 @@ import (
 
 	"k8s.io/klog/v2"
 
-	"github.com/cloudyfolks-labs/fabric/pkg/ovsdb/vswitch"
+	"github.com/cloudyfolks-io/fabric/pkg/ovsdb/vswitch"
 )
 
 func (c *VswitchClient) ListPort(filter func(sw *vswitch.Port) bool) ([]vswitch.Port, error) {

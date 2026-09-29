@@ -16,7 +16,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/cloudyfolks-labs/fabric/pkg/apis/fabric"
+	"github.com/cloudyfolks-io/fabric/pkg/apis/fabric"
 )
 
 func TestResource(t *testing.T) {
