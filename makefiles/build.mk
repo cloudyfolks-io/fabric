@@ -30,6 +30,14 @@ MODERNIZE_EXCLUDE := github.com/cloudyfolks-labs/fabric/mocks|github.com/cloudyf
 gen-crd:
 	hack/gen-crd.sh
 
+.PHONY: print-registry
+print-registry:
+	@echo $(REGISTRY)
+
+.PHONY: print-base-image
+print-base-image:
+	@echo $(BASE_IMAGE)
+
 .PHONY: pull-base
 pull-base:
 	docker pull $(BASE_IMAGE):$(BASE_VERSION_TAG)

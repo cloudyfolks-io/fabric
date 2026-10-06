@@ -363,7 +363,7 @@ jobs:
         run: |
           base_tag=$(cat BASE_VERSION)
           for tag in "$base_tag" "$base_tag-debug" "$base_tag-amd64-legacy"; do
-            if ! docker manifest inspect "ghcr.io/cloudyfolks-labs/fabric-base:$tag" >/dev/null 2>&1; then
+            if ! docker manifest inspect "$(make -s print-base-image):$tag" >/dev/null 2>&1; then
               echo build-base=1 >> "$GITHUB_OUTPUT"
               exit
             fi
@@ -432,7 +432,7 @@ jobs:
 
       - id: check
         run: |
-          if ! docker manifest inspect "ghcr.io/cloudyfolks-labs/fabric-base:$(cat BASE_VERSION)-dpdk" >/dev/null 2>&1; then
+          if ! docker manifest inspect "$(make -s print-base-image):$(cat BASE_VERSION)-dpdk" >/dev/null 2>&1; then
             echo build-dpdk-base=1 >> "$GITHUB_OUTPUT"
             exit
           fi
@@ -558,7 +558,8 @@ jobs:
         if: needs.build-fabric-dpdk-base.outputs.build-dpdk-base == 1
         run: |
           docker load --input image-amd64-dpdk.tar
-          docker tag ghcr.io/cloudyfolks-labs/fabric-base:$TAG-amd64-dpdk ghcr.io/cloudyfolks-labs/fabric-base:$TAG-dpdk
+          base_image=$(make -s print-base-image)
+          docker tag "$base_image:$TAG-amd64-dpdk" "$base_image:$TAG-dpdk"
 
       - name: Pull dpdk base image
         if: needs.build-fabric-dpdk-base.outputs.build-dpdk-base != 1
@@ -628,12 +629,17 @@ jobs:
         if: needs.build-fabric-base.outputs.build-base == 1
         run: |
           docker load --input image-amd64.tar
-          docker tag ghcr.io/cloudyfolks-labs/fabric-base:$TAG-amd64 ghcr.io/cloudyfolks-labs/fabric-base:$TAG
-          docker tag ghcr.io/cloudyfolks-labs/fabric-base:$TAG-debug-amd64 ghcr.io/cloudyfolks-labs/fabric-base:$TAG-debug
+          base_image=$(make -s print-base-image)
+          docker tag "$base_image:$TAG-amd64" "$base_image:$TAG"
+          docker tag "$base_image:$TAG-debug-amd64" "$base_image:$TAG-debug"
 
       - name: Pull base images
         if: needs.build-fabric-base.outputs.build-base != 1
         run: make pull-base
+
+      - name: Resolve base image
+        id: base-image
+        run: echo "ref=$(make -s print-base-image):$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Scan base image
         uses: aquasecurity/trivy-action@v0.36.0
@@ -642,7 +648,7 @@ jobs:
         with:
           scan-type: image
           scanners: vuln
-          image-ref: ghcr.io/cloudyfolks-labs/fabric-base:${{ env.TAG }}
+          image-ref: ${{ steps.base-image.outputs.ref }}
           format: json
           output: trivy-result.json
           ignore-unfixed: true
@@ -2117,7 +2123,8 @@ jobs:
       - name: Load image
         run: |
           docker load --input fabric.tar
-          docker tag "ghcr.io/cloudyfolks-labs/fabric:$(cat VERSION)" ghcr.io/cloudyfolks-labs/fabric:dev
+          registry=$(make -s print-registry)
+          docker tag "$registry/fabric:$(cat VERSION)" "$registry/fabric:dev"
 
       - name: Verify hosted OVN central values
         run: bash hack/kamaji-e2e-test.sh
