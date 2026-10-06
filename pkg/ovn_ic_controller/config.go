@@ -11,8 +11,8 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog/v2"
 
-	clientset "github.com/cloudyfolks-labs/fabric/pkg/client/clientset/versioned"
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
+	clientset "github.com/cloudyfolks-io/fabric/pkg/client/clientset/versioned"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
 )
 
 type Configuration struct {

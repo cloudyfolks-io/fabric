@@ -4,9 +4,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/cloudyfolks-labs/fabric/cmd/pinger"
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
-	"github.com/cloudyfolks-labs/fabric/pkg/util/profiling"
+	"github.com/cloudyfolks-io/fabric/cmd/pinger"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
+	"github.com/cloudyfolks-io/fabric/pkg/util/profiling"
 )
 
 const (

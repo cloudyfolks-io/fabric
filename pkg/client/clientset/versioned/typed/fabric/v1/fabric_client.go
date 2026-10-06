@@ -21,8 +21,8 @@ package v1
 import (
 	http "net/http"
 
-	fabricv1 "github.com/cloudyfolks-labs/fabric/pkg/apis/fabric/v1"
-	scheme "github.com/cloudyfolks-labs/fabric/pkg/client/clientset/versioned/scheme"
+	fabricv1 "github.com/cloudyfolks-io/fabric/pkg/apis/fabric/v1"
+	scheme "github.com/cloudyfolks-io/fabric/pkg/client/clientset/versioned/scheme"
 	rest "k8s.io/client-go/rest"
 )
 

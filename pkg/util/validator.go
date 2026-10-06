@@ -12,7 +12,7 @@ import (
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/klog/v2"
 
-	fabricv1 "github.com/cloudyfolks-labs/fabric/pkg/apis/fabric/v1"
+	fabricv1 "github.com/cloudyfolks-io/fabric/pkg/apis/fabric/v1"
 )
 
 func ValidateSubnet(subnet fabricv1.Subnet) error {

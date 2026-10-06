@@ -12,7 +12,7 @@ CRDs ship in the embedded `fabric-crds` subchart, so `helm upgrade` keeps them u
 The Helm chart is available from GitHub Container Registry:
 
 ```bash
-helm install fabric oci://ghcr.io/cloudyfolks-labs/charts/fabric --version 1.2.1
+helm install fabric oci://ghcr.io/cloudyfolks-io/charts/fabric --version 1.2.1
 ```
 
 ### From Source
@@ -624,7 +624,7 @@ false
     }
   },
   "registry": {
-    "address": "ghcr.io/cloudyfolks-labs",
+    "address": "ghcr.io/cloudyfolks-io",
     "imagePullSecrets": []
   }
 }

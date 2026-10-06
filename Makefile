@@ -8,7 +8,7 @@ include makefiles/e2e.mk
 
 HELM_OVN_DB_TLS_ARGS = $(if $(TLS_MIN_VERSION),--set networking.tlsMinVersion=$(TLS_MIN_VERSION),) $(if $(TLS_MAX_VERSION),--set networking.tlsMaxVersion=$(TLS_MAX_VERSION),) $(if $(TLS_CIPHER_SUITES),--set 'networking.tlsCipherSuites={$(TLS_CIPHER_SUITES)}',)
 
-REGISTRY = ghcr.io/cloudyfolks-labs
+REGISTRY = ghcr.io/cloudyfolks-io
 DEV_TAG = dev
 RELEASE_TAG = $(shell cat VERSION)
 BASE_VERSION_TAG = $(shell cat BASE_VERSION)

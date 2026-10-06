@@ -1,4 +1,4 @@
-module github.com/cloudyfolks-labs/fabric
+module github.com/cloudyfolks-io/fabric
 
 go 1.26.6
 

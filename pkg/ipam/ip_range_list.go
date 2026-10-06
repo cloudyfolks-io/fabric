@@ -9,7 +9,7 @@ import (
 
 	"k8s.io/klog/v2"
 
-	"github.com/cloudyfolks-labs/fabric/pkg/internal"
+	"github.com/cloudyfolks-io/fabric/pkg/internal"
 )
 
 type IPRangeList struct {

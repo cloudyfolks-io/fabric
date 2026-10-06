@@ -13,7 +13,7 @@ import (
 	"github.com/ovn-kubernetes/libovsdb/ovsdb"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
 )
 
 func OvsdbServerAddress(host string, port intstr.IntOrString) string {

@@ -9,7 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
 )
 
 func Test_parseIpv6RaConfigs(t *testing.T) {

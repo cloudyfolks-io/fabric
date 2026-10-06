@@ -1,6 +1,6 @@
 package frr
 
-import "github.com/cloudyfolks-labs/fabric/pkg/util"
+import "github.com/cloudyfolks-io/fabric/pkg/util"
 
 const ovnRouteProtocol = 84
 

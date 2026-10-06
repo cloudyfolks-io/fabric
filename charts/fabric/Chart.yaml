@@ -5,9 +5,9 @@ type: application
 version: 1.2.1
 appVersion: v1.2.1
 kubeVersion: ">= 1.29.0-0"
-home: https://github.com/cloudyfolks-labs/fabric
+home: https://github.com/cloudyfolks-io/fabric
 sources:
-  - https://github.com/cloudyfolks-labs/fabric
+  - https://github.com/cloudyfolks-io/fabric
 keywords:
   - cni
   - networking
@@ -16,8 +16,8 @@ keywords:
   - vpc
   - bgp
 maintainers:
-  - name: cloudyfolks-labs
-    url: https://github.com/cloudyfolks-labs
+  - name: cloudyfolks-io
+    url: https://github.com/cloudyfolks-io
 dependencies:
   - name: fabric-crds
     version: 1.2.1

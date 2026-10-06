@@ -79,16 +79,16 @@ The fabric-specific documentation lives in this repository:
 ## Install
 
 Each release publishes a Helm chart to
-`oci://ghcr.io/cloudyfolks-labs/charts/fabric` and a multi-arch image
-to `ghcr.io/cloudyfolks-labs/fabric`. The chart version equals the
+`oci://ghcr.io/cloudyfolks-io/charts/fabric` and a multi-arch image
+to `ghcr.io/cloudyfolks-io/fabric`. The chart version equals the
 release tag without the `v`:
 
 ```
-helm install fabric oci://ghcr.io/cloudyfolks-labs/charts/fabric \
+helm install fabric oci://ghcr.io/cloudyfolks-io/charts/fabric \
   --version 1.2.1 -n kube-system
 ```
 
-The chart pulls `ghcr.io/cloudyfolks-labs/fabric:v1.2.1`. See the
+The chart pulls `ghcr.io/cloudyfolks-io/fabric:v1.2.1`. See the
 chart [values](charts/fabric/values.yaml) for the options.
 
 To build from source and test in kind:

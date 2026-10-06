@@ -14,8 +14,8 @@ import (
 	"k8s.io/klog/v2"
 	"k8s.io/utils/set"
 
-	ovsclient "github.com/cloudyfolks-labs/fabric/pkg/ovsdb/client"
-	"github.com/cloudyfolks-labs/fabric/pkg/ovsdb/ovnnb"
+	ovsclient "github.com/cloudyfolks-io/fabric/pkg/ovsdb/client"
+	"github.com/cloudyfolks-io/fabric/pkg/ovsdb/ovnnb"
 )
 
 func (c *OVNNbClient) AddLogicalRouterPolicy(lrName string, priority int, match, action string, nextHops, bfdSessions []string, externalIDs map[string]string) error {

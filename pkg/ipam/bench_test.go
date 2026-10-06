@@ -12,8 +12,8 @@ import (
 	"github.com/scylladb/go-set/strset"
 	"k8s.io/klog/v2"
 
-	fabricv1 "github.com/cloudyfolks-labs/fabric/pkg/apis/fabric/v1"
-	"github.com/cloudyfolks-labs/fabric/pkg/ipam"
+	fabricv1 "github.com/cloudyfolks-io/fabric/pkg/apis/fabric/v1"
+	"github.com/cloudyfolks-io/fabric/pkg/ipam"
 )
 
 func init() {

@@ -9,7 +9,7 @@ import (
 
 	"k8s.io/klog/v2"
 
-	"github.com/cloudyfolks-labs/fabric/pkg/ovsdb/ovnnb"
+	"github.com/cloudyfolks-io/fabric/pkg/ovsdb/ovnnb"
 )
 
 func (c *OVNNbClient) CreateNbGlobal(nbGlobal *ovnnb.NBGlobal) error {

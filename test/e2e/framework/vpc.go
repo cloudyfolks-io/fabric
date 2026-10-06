@@ -16,9 +16,9 @@ import (
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 
-	fabricv1 "github.com/cloudyfolks-labs/fabric/pkg/apis/fabric/v1"
-	v1 "github.com/cloudyfolks-labs/fabric/pkg/client/clientset/versioned/typed/fabric/v1"
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
+	fabricv1 "github.com/cloudyfolks-io/fabric/pkg/apis/fabric/v1"
+	v1 "github.com/cloudyfolks-io/fabric/pkg/client/clientset/versioned/typed/fabric/v1"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
 )
 
 type VpcClient struct {

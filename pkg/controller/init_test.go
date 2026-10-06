@@ -10,8 +10,8 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/cloudyfolks-labs/fabric/pkg/ovsdb/ovnnb"
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
+	"github.com/cloudyfolks-io/fabric/pkg/ovsdb/ovnnb"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
 )
 
 func TestHasAllocatedAnnotation(t *testing.T) {

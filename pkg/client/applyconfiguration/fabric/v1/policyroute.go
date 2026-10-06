@@ -19,7 +19,7 @@ limitations under the License.
 package v1
 
 import (
-	fabricv1 "github.com/cloudyfolks-labs/fabric/pkg/apis/fabric/v1"
+	fabricv1 "github.com/cloudyfolks-io/fabric/pkg/apis/fabric/v1"
 )
 
 // PolicyRouteApplyConfiguration represents a declarative configuration of the PolicyRoute type for use

@@ -21,10 +21,10 @@ import (
 	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 
-	fabricv1 "github.com/cloudyfolks-labs/fabric/pkg/apis/fabric/v1"
-	fabricinformer "github.com/cloudyfolks-labs/fabric/pkg/client/informers/externalversions"
-	fabriclister "github.com/cloudyfolks-labs/fabric/pkg/client/listers/fabric/v1"
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
+	fabricv1 "github.com/cloudyfolks-io/fabric/pkg/apis/fabric/v1"
+	fabricinformer "github.com/cloudyfolks-io/fabric/pkg/client/informers/externalversions"
+	fabriclister "github.com/cloudyfolks-io/fabric/pkg/client/listers/fabric/v1"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
 )
 
 type Controller struct {

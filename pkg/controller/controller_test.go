@@ -20,13 +20,13 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/keymutex"
 
-	mockovs "github.com/cloudyfolks-labs/fabric/mocks/pkg/ovs"
-	fabricv1 "github.com/cloudyfolks-labs/fabric/pkg/apis/fabric/v1"
-	fabricfake "github.com/cloudyfolks-labs/fabric/pkg/client/clientset/versioned/fake"
-	fabricinformerfactory "github.com/cloudyfolks-labs/fabric/pkg/client/informers/externalversions"
-	fabricinformer "github.com/cloudyfolks-labs/fabric/pkg/client/informers/externalversions/fabric/v1"
-	ovnipam "github.com/cloudyfolks-labs/fabric/pkg/ipam"
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
+	mockovs "github.com/cloudyfolks-io/fabric/mocks/pkg/ovs"
+	fabricv1 "github.com/cloudyfolks-io/fabric/pkg/apis/fabric/v1"
+	fabricfake "github.com/cloudyfolks-io/fabric/pkg/client/clientset/versioned/fake"
+	fabricinformerfactory "github.com/cloudyfolks-io/fabric/pkg/client/informers/externalversions"
+	fabricinformer "github.com/cloudyfolks-io/fabric/pkg/client/informers/externalversions/fabric/v1"
+	ovnipam "github.com/cloudyfolks-io/fabric/pkg/ipam"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
 )
 
 func TestMain(m *testing.M) {

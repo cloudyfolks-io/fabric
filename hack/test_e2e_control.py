@@ -59,7 +59,7 @@ class E2EControlTest(unittest.TestCase):
             "action": "created",
             "comment": {"id": 1001, "body": body, "user": {"login": "maintainer"}},
             "issue": {"number": 7231, "pull_request": {"url": "https://api.example/pr/7231"}},
-            "repository": {"full_name": "cloudyfolks-labs/fabric"},
+            "repository": {"full_name": "cloudyfolks-io/fabric"},
         }
         pullRequest = {
             "number": 7231,
@@ -514,7 +514,7 @@ class E2EControlTest(unittest.TestCase):
                         "action": "created",
                         "comment": {"id": 1001, "body": "/test e2e policy", "user": {"login": "maintainer"}},
                         "issue": {"number": 7231, "pull_request": {"url": "https://api.example/pr/7231"}},
-                        "repository": {"full_name": "cloudyfolks-labs/fabric"},
+                        "repository": {"full_name": "cloudyfolks-io/fabric"},
                     }
                 )
             )
@@ -792,7 +792,7 @@ class E2EControlTest(unittest.TestCase):
     def testKindPullsNodeImageFromUpstreamOnly(self):
         makefile = (repoRoot / "makefiles/kind.mk").read_text()
 
-        self.assertNotIn("cloudyfolks-labs/kindest-node", makefile)
+        self.assertNotIn("cloudyfolks-io/kindest-node", makefile)
         self.assertNotIn("GHCR_TOKEN", makefile)
 
 

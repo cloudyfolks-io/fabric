@@ -63,7 +63,7 @@ KAMAJI_CHART_SOURCE_COMMIT=${KAMAJI_CHART_SOURCE_COMMIT:-5ce3f6c337edc63347a32b2
 KAMAJI_CHART_SHA256=${KAMAJI_CHART_SHA256:-2e642a485eae8bd964c0a363b4ce01bd8379d05b42960b7919676f96f7c63b36}
 KAMAJI_CHART_URL=${KAMAJI_CHART_URL:-https://raw.githubusercontent.com/clastix/charts/$KAMAJI_CHART_SOURCE_COMMIT/kamaji-$KAMAJI_CHART_VERSION.tgz}
 
-FABRIC_IMAGE=${FABRIC_IMAGE:-ghcr.io/cloudyfolks-labs/fabric:dev}
+FABRIC_IMAGE=${FABRIC_IMAGE:-ghcr.io/cloudyfolks-io/fabric:dev}
 JOB_DIR=${JOB_DIR:-/tmp/kamaji-e2e}
 REGISTRY_NAME=${REGISTRY_NAME:-kamaji-e2e-reg}
 
@@ -238,7 +238,7 @@ image:
 
 global:
   registry:
-    address: ghcr.io/cloudyfolks-labs
+    address: ghcr.io/cloudyfolks-io
   images:
     fabric:
       repository: fabric
@@ -277,7 +277,7 @@ image:
 
 global:
   registry:
-    address: ghcr.io/cloudyfolks-labs
+    address: ghcr.io/cloudyfolks-io
   images:
     fabric:
       repository: fabric
@@ -561,7 +561,7 @@ install_tenant_kube_proxy() {
 }
 
 cmd_render_tenant_fabric_image() {
-  echo "ghcr.io/cloudyfolks-labs/fabric:dev"
+  echo "ghcr.io/cloudyfolks-io/fabric:dev"
 }
 
 cmd_render_tenant_e2e_images() {
@@ -569,12 +569,12 @@ cmd_render_tenant_e2e_images() {
 }
 
 local_registry_fabric_image() {
-  echo "localhost:5000/cloudyfolks-labs/fabric:dev"
+  echo "localhost:5000/cloudyfolks-io/fabric:dev"
 }
 
 tenant_registry_fabric_image() {
   local reg_ip=$1
-  echo "$reg_ip:5000/cloudyfolks-labs/fabric:dev"
+  echo "$reg_ip:5000/cloudyfolks-io/fabric:dev"
 }
 
 cmd_render_tenant_worker_docker_args() {

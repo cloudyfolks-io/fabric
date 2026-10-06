@@ -7,8 +7,8 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	apiv1 "github.com/cloudyfolks-labs/fabric/pkg/apis/fabric/v1"
-	v1 "github.com/cloudyfolks-labs/fabric/pkg/client/clientset/versioned/typed/fabric/v1"
+	apiv1 "github.com/cloudyfolks-io/fabric/pkg/apis/fabric/v1"
+	v1 "github.com/cloudyfolks-io/fabric/pkg/client/clientset/versioned/typed/fabric/v1"
 )
 
 type DNSZoneClient struct {

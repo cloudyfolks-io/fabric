@@ -10,10 +10,10 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/manager/signals"
 
-	"github.com/cloudyfolks-labs/fabric/pkg/metrics"
-	"github.com/cloudyfolks-labs/fabric/pkg/pinger"
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
-	"github.com/cloudyfolks-labs/fabric/versions"
+	"github.com/cloudyfolks-io/fabric/pkg/metrics"
+	"github.com/cloudyfolks-io/fabric/pkg/pinger"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
+	"github.com/cloudyfolks-io/fabric/versions"
 )
 
 func CmdMain() {

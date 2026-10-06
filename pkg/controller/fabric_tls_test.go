@@ -14,7 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes/fake"
 
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
 )
 
 func TestReconcileFabricTLSAddsBaselineAnnotation(t *testing.T) {

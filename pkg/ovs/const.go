@@ -1,6 +1,6 @@
 package ovs
 
-import "github.com/cloudyfolks-labs/fabric/pkg/util"
+import "github.com/cloudyfolks-io/fabric/pkg/util"
 
 func CmdSSLArgs() []string {
 	return []string{

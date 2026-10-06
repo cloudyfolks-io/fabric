@@ -30,12 +30,12 @@ import (
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 
-	apiv1 "github.com/cloudyfolks-labs/fabric/pkg/apis/fabric/v1"
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
-	"github.com/cloudyfolks-labs/fabric/test/e2e/framework"
-	"github.com/cloudyfolks-labs/fabric/test/e2e/framework/docker"
-	"github.com/cloudyfolks-labs/fabric/test/e2e/framework/iproute"
-	"github.com/cloudyfolks-labs/fabric/test/e2e/framework/kind"
+	apiv1 "github.com/cloudyfolks-io/fabric/pkg/apis/fabric/v1"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
+	"github.com/cloudyfolks-io/fabric/test/e2e/framework"
+	"github.com/cloudyfolks-io/fabric/test/e2e/framework/docker"
+	"github.com/cloudyfolks-io/fabric/test/e2e/framework/iproute"
+	"github.com/cloudyfolks-io/fabric/test/e2e/framework/kind"
 )
 
 const (

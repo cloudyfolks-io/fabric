@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
 )
 
 func TestClassifyProviderVlanPort(t *testing.T) {

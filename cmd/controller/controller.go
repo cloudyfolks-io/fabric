@@ -20,12 +20,12 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/manager/signals"
 
-	"github.com/cloudyfolks-labs/fabric/pkg/apis/fabric"
-	fabricv1 "github.com/cloudyfolks-labs/fabric/pkg/apis/fabric/v1"
-	"github.com/cloudyfolks-labs/fabric/pkg/controller"
-	"github.com/cloudyfolks-labs/fabric/pkg/metrics"
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
-	"github.com/cloudyfolks-labs/fabric/versions"
+	"github.com/cloudyfolks-io/fabric/pkg/apis/fabric"
+	fabricv1 "github.com/cloudyfolks-io/fabric/pkg/apis/fabric/v1"
+	"github.com/cloudyfolks-io/fabric/pkg/controller"
+	"github.com/cloudyfolks-io/fabric/pkg/metrics"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
+	"github.com/cloudyfolks-io/fabric/versions"
 )
 
 const ovnLeaderResource = "fabric-controller"

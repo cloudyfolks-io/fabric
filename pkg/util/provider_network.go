@@ -8,7 +8,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 
-	fabricv1 "github.com/cloudyfolks-labs/fabric/pkg/apis/fabric/v1"
+	fabricv1 "github.com/cloudyfolks-io/fabric/pkg/apis/fabric/v1"
 )
 
 func NodeMatchesSelector(node *v1.Node, selector *metav1.LabelSelector) (bool, error) {

@@ -14,9 +14,9 @@ import (
 	"github.com/scylladb/go-set/strset"
 	"k8s.io/klog/v2"
 
-	ovsclient "github.com/cloudyfolks-labs/fabric/pkg/ovsdb/client"
-	"github.com/cloudyfolks-labs/fabric/pkg/ovsdb/ovnnb"
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
+	ovsclient "github.com/cloudyfolks-io/fabric/pkg/ovsdb/client"
+	"github.com/cloudyfolks-io/fabric/pkg/ovsdb/ovnnb"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
 )
 
 func buildLogicalSwitchPort(lspName, lsName, ip, mac, podName, namespace string, portSecurity bool, securityGroups, vips string, enableDHCP bool, dhcpOptions *DHCPOptionsUUIDs, vpc string) *ovnnb.LogicalSwitchPort {

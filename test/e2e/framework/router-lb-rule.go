@@ -15,9 +15,9 @@ import (
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 
-	apiv1 "github.com/cloudyfolks-labs/fabric/pkg/apis/fabric/v1"
-	v1 "github.com/cloudyfolks-labs/fabric/pkg/client/clientset/versioned/typed/fabric/v1"
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
+	apiv1 "github.com/cloudyfolks-io/fabric/pkg/apis/fabric/v1"
+	v1 "github.com/cloudyfolks-io/fabric/pkg/client/clientset/versioned/typed/fabric/v1"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
 )
 
 type RouterLBRuleClient struct {

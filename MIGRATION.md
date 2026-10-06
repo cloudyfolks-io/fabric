@@ -51,7 +51,7 @@ control-plane gap (`<release>` is the name of your Helm release):
 ```sh
 kubectl -n kube-system delete deploy ovn-central --cascade=orphan
 kubectl -n kube-system delete ds ovs-ovn --cascade=orphan
-helm upgrade <release> oci://ghcr.io/cloudyfolks-labs/charts/fabric --version 1.2.1 -f values.yaml
+helm upgrade <release> oci://ghcr.io/cloudyfolks-io/charts/fabric --version 1.2.1 -f values.yaml
 ```
 
 The upgrade creates the two objects with the new selectors. The new

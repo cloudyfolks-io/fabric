@@ -12,7 +12,7 @@ import (
 	"github.com/scylladb/go-set/u32set"
 	"github.com/stretchr/testify/require"
 
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
 )
 
 func TestNewIPRangeList(t *testing.T) {

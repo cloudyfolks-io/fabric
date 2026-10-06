@@ -10,8 +10,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 
-	fabricv1 "github.com/cloudyfolks-labs/fabric/pkg/apis/fabric/v1"
-	"github.com/cloudyfolks-labs/fabric/pkg/util"
+	fabricv1 "github.com/cloudyfolks-io/fabric/pkg/apis/fabric/v1"
+	"github.com/cloudyfolks-io/fabric/pkg/util"
 )
 
 func Test_getVipIps(t *testing.T) {

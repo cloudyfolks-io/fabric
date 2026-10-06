@@ -21,9 +21,9 @@ package v1
 import (
 	context "context"
 
-	fabricv1 "github.com/cloudyfolks-labs/fabric/pkg/apis/fabric/v1"
-	applyconfigurationfabricv1 "github.com/cloudyfolks-labs/fabric/pkg/client/applyconfiguration/fabric/v1"
-	scheme "github.com/cloudyfolks-labs/fabric/pkg/client/clientset/versioned/scheme"
+	fabricv1 "github.com/cloudyfolks-io/fabric/pkg/apis/fabric/v1"
+	applyconfigurationfabricv1 "github.com/cloudyfolks-io/fabric/pkg/client/applyconfiguration/fabric/v1"
+	scheme "github.com/cloudyfolks-io/fabric/pkg/client/clientset/versioned/scheme"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	types "k8s.io/apimachinery/pkg/types"
 	watch "k8s.io/apimachinery/pkg/watch"
