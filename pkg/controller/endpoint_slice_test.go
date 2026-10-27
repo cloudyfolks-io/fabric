@@ -840,3 +840,227 @@ func TestReplaceEndpointAddressesWithSecondaryIPs(t *testing.T) {
 		})
 	}
 }
+
+const twoInterfaceProvider = "vpc.kube-system." + util.OvnProvider
+
+func twoInterfaceTestOptions(pod *corev1.Pod) *FakeControllerOptions {
+	return &FakeControllerOptions{
+		Pods: []*corev1.Pod{pod},
+		NetworkAttachments: []*nadv1.NetworkAttachmentDefinition{{
+			ObjectMeta: metav1.ObjectMeta{Name: "vpc", Namespace: "kube-system"},
+			Spec: nadv1.NetworkAttachmentDefinitionSpec{
+				Config: `{"cniVersion": "0.3.1", "name": "vpc", "type": "fabric", "provider": "` + twoInterfaceProvider + `"}`,
+			},
+		}},
+		Subnets: []*fabricv1.Subnet{
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: util.DefaultSubnet},
+				Spec:       fabricv1.SubnetSpec{CIDRBlock: "10.244.0.0/24", Vpc: util.DefaultVpc, Provider: util.OvnProvider},
+			},
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: "customer"},
+				Spec:       fabricv1.SubnetSpec{CIDRBlock: "192.168.1.0/24", Vpc: "tenant-vpc", Provider: util.OvnProvider},
+			},
+		},
+	}
+}
+
+func twoInterfacePod(secondaryIPs string) *corev1.Pod {
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "backend",
+			Namespace: "default",
+			Annotations: map[string]string{
+				nadv1.NetworkAttachmentAnnot: "kube-system/vpc",
+
+				fmt.Sprintf(util.LogicalSwitchAnnotationTemplate, util.OvnProvider): util.DefaultSubnet,
+				fmt.Sprintf(util.LogicalRouterAnnotationTemplate, util.OvnProvider): util.DefaultVpc,
+				fmt.Sprintf(util.IPAddressAnnotationTemplate, util.OvnProvider):     "10.244.0.5",
+
+				fmt.Sprintf(util.LogicalSwitchAnnotationTemplate, twoInterfaceProvider): "customer",
+				fmt.Sprintf(util.LogicalRouterAnnotationTemplate, twoInterfaceProvider): "tenant-vpc",
+				fmt.Sprintf(util.IPAddressAnnotationTemplate, twoInterfaceProvider):     secondaryIPs,
+			},
+		},
+		Status: corev1.PodStatus{PodIP: "10.244.0.5"},
+	}
+}
+
+func twoInterfaceService(annotations map[string]string, selector map[string]string) *corev1.Service {
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "default", Annotations: annotations},
+		Spec:       corev1.ServiceSpec{Selector: selector},
+	}
+}
+
+func twoInterfaceSlice(addressType discoveryv1.AddressType, address string) *discoveryv1.EndpointSlice {
+	return &discoveryv1.EndpointSlice{
+		ObjectMeta:  metav1.ObjectMeta{Name: "svc-slice-" + string(addressType), Namespace: "default"},
+		AddressType: addressType,
+		Ports:       []discoveryv1.EndpointPort{{Name: new("http"), Port: new(int32(80))}},
+		Endpoints: []discoveryv1.Endpoint{{
+			Addresses: []string{address},
+			TargetRef: &corev1.ObjectReference{Kind: util.KindPod, Namespace: "default", Name: "backend"},
+		}},
+	}
+}
+
+func TestReplaceEndpointAddressesWithVpcIPs(t *testing.T) {
+	selector := map[string]string{"app": "db"}
+	tests := []struct {
+		name        string
+		annotations map[string]string
+		selector    map[string]string
+		secondary   string
+		want        string
+	}{
+		{
+			name:        "vpc of the secondary interface",
+			annotations: map[string]string{util.LogicalRouterAnnotation: "tenant-vpc"},
+			selector:    selector,
+			secondary:   "192.168.1.10",
+			want:        "192.168.1.10",
+		},
+		{
+			name:        "vpc and subnet of the secondary interface",
+			annotations: map[string]string{util.LogicalRouterAnnotation: "tenant-vpc", util.LogicalSwitchAnnotation: "customer"},
+			selector:    selector,
+			secondary:   "192.168.1.10",
+			want:        "192.168.1.10",
+		},
+		{
+			name:        "subnet only",
+			annotations: map[string]string{util.LogicalSwitchAnnotation: "customer"},
+			selector:    selector,
+			secondary:   "192.168.1.10",
+			want:        "192.168.1.10",
+		},
+		{
+			name:        "vpc of the primary interface keeps the primary address",
+			annotations: map[string]string{util.LogicalRouterAnnotation: util.DefaultVpc},
+			selector:    selector,
+			secondary:   "192.168.1.10",
+			want:        "10.244.0.5",
+		},
+		{
+			name:        "subnet of the primary interface keeps the primary address",
+			annotations: map[string]string{util.LogicalSwitchAnnotation: util.DefaultSubnet},
+			selector:    selector,
+			secondary:   "192.168.1.10",
+			want:        "10.244.0.5",
+		},
+		{
+			name:        "vpc matches but subnet does not",
+			annotations: map[string]string{util.LogicalRouterAnnotation: "tenant-vpc", util.LogicalSwitchAnnotation: "other"},
+			selector:    selector,
+			secondary:   "192.168.1.10",
+			want:        "10.244.0.5",
+		},
+		{
+			name:        "unknown vpc",
+			annotations: map[string]string{util.LogicalRouterAnnotation: "other-vpc"},
+			selector:    selector,
+			secondary:   "192.168.1.10",
+			want:        "10.244.0.5",
+		},
+		{
+			name:      "service without vpc or subnet",
+			selector:  selector,
+			secondary: "192.168.1.10",
+			want:      "10.244.0.5",
+		},
+		{
+			name:        "service without selector",
+			annotations: map[string]string{util.LogicalRouterAnnotation: "tenant-vpc"},
+			secondary:   "192.168.1.10",
+			want:        "10.244.0.5",
+		},
+		{
+			name:        "secondary interface without address",
+			annotations: map[string]string{util.LogicalRouterAnnotation: "tenant-vpc"},
+			selector:    selector,
+			secondary:   "",
+			want:        "10.244.0.5",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fc, err := newFakeControllerWithOptions(t, twoInterfaceTestOptions(twoInterfacePod(tt.secondary)))
+			require.NoError(t, err)
+
+			original := twoInterfaceSlice(discoveryv1.AddressTypeIPv4, "10.244.0.5")
+			slices := []*discoveryv1.EndpointSlice{original}
+
+			err = fc.fakeController.replaceEndpointAddressesWithVpcIPs(twoInterfaceService(tt.annotations, tt.selector), slices)
+			require.NoError(t, err)
+
+			require.Len(t, slices, 1)
+			require.Len(t, slices[0].Endpoints, 1)
+			assert.Equal(t, []string{tt.want}, slices[0].Endpoints[0].Addresses)
+			assert.Equal(t, []string{"10.244.0.5"}, original.Endpoints[0].Addresses, "the shared slice must not be mutated")
+		})
+	}
+}
+
+func TestReplaceEndpointAddressesWithVpcIPsDualStack(t *testing.T) {
+	fc, err := newFakeControllerWithOptions(t, twoInterfaceTestOptions(twoInterfacePod("192.168.1.10,fd00:1::10")))
+	require.NoError(t, err)
+
+	slices := []*discoveryv1.EndpointSlice{
+		twoInterfaceSlice(discoveryv1.AddressTypeIPv4, "10.244.0.5"),
+		twoInterfaceSlice(discoveryv1.AddressTypeIPv6, "fd00:244::5"),
+	}
+	svc := twoInterfaceService(map[string]string{util.LogicalRouterAnnotation: "tenant-vpc"}, map[string]string{"app": "db"})
+
+	require.NoError(t, fc.fakeController.replaceEndpointAddressesWithVpcIPs(svc, slices))
+	assert.Equal(t, []string{"192.168.1.10"}, slices[0].Endpoints[0].Addresses)
+	assert.Equal(t, []string{"fd00:1::10"}, slices[1].Endpoints[0].Addresses)
+}
+
+func TestReplaceEndpointAddressesWithVpcIPsDropsFamilyWithoutSecondaryAddress(t *testing.T) {
+	fc, err := newFakeControllerWithOptions(t, twoInterfaceTestOptions(twoInterfacePod("192.168.1.10")))
+	require.NoError(t, err)
+
+	slices := []*discoveryv1.EndpointSlice{twoInterfaceSlice(discoveryv1.AddressTypeIPv6, "fd00:244::5")}
+	svc := twoInterfaceService(map[string]string{util.LogicalRouterAnnotation: "tenant-vpc"}, map[string]string{"app": "db"})
+
+	require.NoError(t, fc.fakeController.replaceEndpointAddressesWithVpcIPs(svc, slices))
+	assert.Empty(t, slices[0].Endpoints[0].Addresses)
+}
+
+func TestReplaceEndpointAddressesWithVpcIPsSkipsMissingPod(t *testing.T) {
+	fc, err := newFakeControllerWithOptions(t, twoInterfaceTestOptions(twoInterfacePod("192.168.1.10")))
+	require.NoError(t, err)
+
+	slice := twoInterfaceSlice(discoveryv1.AddressTypeIPv4, "10.244.0.9")
+	slice.Endpoints[0].TargetRef.Name = "gone"
+	slices := []*discoveryv1.EndpointSlice{slice}
+	svc := twoInterfaceService(map[string]string{util.LogicalRouterAnnotation: "tenant-vpc"}, map[string]string{"app": "db"})
+
+	require.NoError(t, fc.fakeController.replaceEndpointAddressesWithVpcIPs(svc, slices))
+	assert.Equal(t, []string{"10.244.0.9"}, slices[0].Endpoints[0].Addresses)
+}
+
+func TestSecondaryAddressMovesLoadBalancerToTheSecondaryVpc(t *testing.T) {
+	fc, err := newFakeControllerWithOptions(t, twoInterfaceTestOptions(twoInterfacePod("192.168.1.10")))
+	require.NoError(t, err)
+	ctrl := fc.fakeController
+
+	slices := []*discoveryv1.EndpointSlice{twoInterfaceSlice(discoveryv1.AddressTypeIPv4, "10.244.0.5")}
+	svc := twoInterfaceService(map[string]string{util.LogicalRouterAnnotation: "tenant-vpc"}, map[string]string{"app": "db"})
+
+	vpcName, subnetName, err := ctrl.getVpcAndSubnetForEndpoints(slices, svc)
+	require.NoError(t, err)
+	assert.Equal(t, util.DefaultVpc, vpcName, "the primary address sits in the default vpc")
+	assert.Equal(t, util.DefaultSubnet, subnetName)
+
+	require.NoError(t, ctrl.replaceEndpointAddressesWithVpcIPs(svc, slices))
+	vpcName, subnetName, err = ctrl.getVpcAndSubnetForEndpoints(slices, svc)
+	require.NoError(t, err)
+	assert.Equal(t, "tenant-vpc", vpcName)
+	assert.Equal(t, "customer", subnetName)
+
+	backends := ctrl.getEndpointBackend(slices, corev1.ServicePort{Name: "http"}, "192.168.1.100")
+	assert.Equal(t, []string{"192.168.1.10:80"}, backends)
+}

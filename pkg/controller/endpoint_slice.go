@@ -163,6 +163,11 @@ func (c *Controller) handleUpdateEndpointSlice(key string) error {
 		}
 	}
 
+	if err = c.replaceEndpointAddressesWithVpcIPs(svc, endpointSlices); err != nil {
+		klog.Errorf("failed to update endpointSlice for service %s: %v", key, err)
+		return err
+	}
+
 	vpcName, subnetName, err = c.getVpcAndSubnetForEndpoints(endpointSlices, svc)
 	if err != nil {
 		return err
@@ -370,6 +375,100 @@ func (c *Controller) replaceEndpointAddressesWithSecondaryIPs(endpointSlices []*
 		}
 
 		if needsUpdate {
+			endpointSlices[i] = copiedSlice
+		}
+	}
+
+	return nil
+}
+
+func podNetOnVpcSubnet(pod *v1.Pod, provider, vpcName, subnetName string) bool {
+	if subnetName != "" && pod.Annotations[fmt.Sprintf(util.LogicalSwitchAnnotationTemplate, provider)] != subnetName {
+		return false
+	}
+	if vpcName != "" && pod.Annotations[fmt.Sprintf(util.LogicalRouterAnnotationTemplate, provider)] != vpcName {
+		return false
+	}
+	return true
+}
+
+func (c *Controller) getPodIPsOnVpcSubnet(pod *v1.Pod, vpcName, subnetName string) ([]string, error) {
+	podNets, err := c.getPodFabricNets(pod)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get pod networks: %w", err)
+	}
+
+	var ips []string
+	for _, podNet := range podNets {
+		if !podNetOnVpcSubnet(pod, podNet.ProviderName, vpcName, subnetName) {
+			continue
+		}
+		if podNet.IsDefault {
+			return nil, nil
+		}
+		if ips == nil {
+			ips = splitAnnotationIPs(pod.Annotations[fmt.Sprintf(util.IPAddressAnnotationTemplate, podNet.ProviderName)])
+		}
+	}
+
+	return ips, nil
+}
+
+func (c *Controller) replaceEndpointAddressesWithVpcIPs(svc *v1.Service, endpointSlices []*discoveryv1.EndpointSlice) error {
+	vpcName, subnetName := getCustomServiceVpcAndSubnet(svc)
+	if !serviceHasSelector(svc) || (vpcName == "" && subnetName == "") {
+		return nil
+	}
+
+	podIPs := make(map[string][]string)
+	for i, slice := range endpointSlices {
+		var copiedSlice *discoveryv1.EndpointSlice
+		for j, ep := range slice.Endpoints {
+			if ep.TargetRef == nil || ep.TargetRef.Kind != util.KindPod {
+				continue
+			}
+
+			namespace := ep.TargetRef.Namespace
+			if namespace == "" {
+				namespace = slice.Namespace
+			}
+			podKey := namespace + "/" + ep.TargetRef.Name
+
+			ips, ok := podIPs[podKey]
+			if !ok {
+				pod, err := c.podsLister.Pods(namespace).Get(ep.TargetRef.Name)
+				if err != nil {
+					if errors.IsNotFound(err) {
+						podIPs[podKey] = nil
+						continue
+					}
+					return err
+				}
+				if ips, err = c.getPodIPsOnVpcSubnet(pod, vpcName, subnetName); err != nil {
+					return err
+				}
+				podIPs[podKey] = ips
+			}
+			if len(ips) == 0 {
+				continue
+			}
+
+			if copiedSlice == nil {
+				copiedSlice = slice.DeepCopy()
+			}
+			addresses := make([]string, 0, len(ep.Addresses))
+			for _, address := range ep.Addresses {
+				for _, ip := range ips {
+					if util.CheckProtocol(ip) == util.CheckProtocol(address) {
+						klog.V(3).Infof("using %s instead of %s as backend of pod %s for service %s/%s", ip, address, podKey, svc.Namespace, svc.Name)
+						addresses = append(addresses, ip)
+						break
+					}
+				}
+			}
+			copiedSlice.Endpoints[j].Addresses = addresses
+		}
+		if copiedSlice != nil {
 			endpointSlices[i] = copiedSlice
 		}
 	}
