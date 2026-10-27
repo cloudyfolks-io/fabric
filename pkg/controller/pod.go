@@ -2272,7 +2272,7 @@ func (c *Controller) acquireAddress(pod *v1.Pod, podNet *fabricNet) (string, str
 		return "", "", "", podNet.Subnet, err
 	}
 
-	if ippoolStr == "" && podNet.IsDefault {
+	if ippoolStr == "" && podNet.IsDefault && subnetStr == "" {
 		ns, err := c.namespacesLister.Get(pod.Namespace)
 		if err != nil {
 			klog.Errorf("failed to get namespace %s: %v", pod.Namespace, err)

@@ -1076,6 +1076,31 @@ var _ = framework.Describe("[group:ipam]", func() {
 		framework.ExpectConsistOf(util.PodIPs(*pod), poolIPs)
 	})
 
+	framework.ConformanceIt("should ignore namespace IPPools for a pod with an explicit subnet", func() {
+		ginkgo.By("Creating subnet " + subnetName2)
+		cidr2 := framework.RandomCIDR(f.ClusterIPFamily)
+		subnet2 := framework.MakeSubnet(subnetName2, "", cidr2, "", "", "", nil, nil, []string{namespaceName})
+		subnet2 = subnetClient.CreateSync(subnet2)
+
+		ginkgo.By("Creating IPPool " + ippoolName + " in subnet " + subnetName)
+		ips := framework.RandomIPPool(cidr, 1)
+		ippool := framework.MakeIPPool(ippoolName, subnetName, ips, []string{namespaceName})
+		_ = ippoolClient.CreateSync(ippool)
+
+		ginkgo.By("Waiting for namespace " + namespaceName + " to have IPPool annotation")
+		nsClient.WaitUntil(namespaceName, func(ns *corev1.Namespace) (bool, error) {
+			return strings.Contains(ns.Annotations[util.IPPoolAnnotation], ippoolName), nil
+		}, "IPPool annotation contains "+ippoolName, 2*time.Second, 30*time.Second)
+
+		ginkgo.By("Creating pod " + podName + " in subnet " + subnetName2 + " which has no IPPool")
+		annotations := map[string]string{util.LogicalSwitchAnnotation: subnetName2}
+		pod := framework.MakePod(namespaceName, podName, nil, annotations, "", nil, nil)
+		pod = podClient.CreateSync(pod)
+
+		framework.ExpectHaveKeyWithValue(pod.Annotations, util.LogicalSwitchAnnotation, subnetName2)
+		framework.ExpectIPInCIDR(pod.Annotations[util.IPAddressAnnotation], subnet2.Spec.CIDRBlock)
+	})
+
 	framework.ConformanceIt("should be able to allocate IP from IPPools in different subnets", func() {
 		f.SkipVersionPriorTo(1, 14, "This feature was introduced in v1.14")
 		ipsCount := 1
