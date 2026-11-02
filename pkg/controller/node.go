@@ -918,6 +918,12 @@ func (c *Controller) fetchPodsOnNode(nodeName string) ([]string, error) {
 				continue
 			}
 
+			if !podNet.IsDefault {
+				if router := pod.Annotations[fmt.Sprintf(util.LogicalRouterAnnotationTemplate, podNet.ProviderName)]; router != "" && router != c.config.ClusterRouter {
+					continue
+				}
+			}
+
 			if pod.Annotations != nil && pod.Annotations[fmt.Sprintf(util.AllocatedAnnotationTemplate, podNet.ProviderName)] == "true" {
 				ports = append(ports, ovs.PodNameToPortName(podName, pod.Namespace, podNet.ProviderName))
 			}

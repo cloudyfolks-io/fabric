@@ -157,6 +157,58 @@ func TestHandleAddSuccessEvent(t *testing.T) {
 	}
 }
 
+func TestAnnotatedSubnet(t *testing.T) {
+	const (
+		provider = "vpc.kube-system." + util.OvnProvider
+		subnet   = "customer"
+	)
+	podWith := func(annotations map[string]string) *v1.Pod {
+		return &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "pod", Namespace: "ns", Annotations: annotations}}
+	}
+	customerSubnet := &fabricv1.Subnet{ObjectMeta: metav1.ObjectMeta{Name: subnet}, Spec: fabricv1.SubnetSpec{Provider: util.OvnProvider}}
+	handler := cniEventTestHandler(t, nil, customerSubnet, &cniEventRecorder{})
+	key := fmt.Sprintf(util.LogicalSwitchAnnotationTemplate, provider)
+	ifKey := fmt.Sprintf(util.LogicalSwitchAnnotationTemplate, provider+".net1")
+
+	got := handler.annotatedSubnet(podWith(map[string]string{key: subnet}), provider, "net1", false)
+	require.NotNil(t, got)
+	require.Equal(t, subnet, got.Name)
+	require.Equal(t, util.OvnProvider, got.Spec.Provider, "the subnet may belong to another provider")
+
+	got = handler.annotatedSubnet(podWith(map[string]string{ifKey: subnet}), provider, "net1", true)
+	require.NotNil(t, got)
+	require.Equal(t, subnet, got.Name)
+
+	require.Nil(t, handler.annotatedSubnet(podWith(map[string]string{key: "missing"}), provider, "net1", false))
+	require.Nil(t, handler.annotatedSubnet(podWith(map[string]string{ifKey: subnet}), provider, "net1", false))
+	require.Nil(t, handler.annotatedSubnet(podWith(nil), provider, "net1", false))
+}
+
+func TestHandleAddRejectsProviderWithoutSubnet(t *testing.T) {
+	const provider = "vpc.kube-system." + util.OvnProvider
+	customerSubnet := &fabricv1.Subnet{ObjectMeta: metav1.ObjectMeta{Name: "customer"}, Spec: fabricv1.SubnetSpec{Provider: util.OvnProvider}}
+	req := request.CniRequest{
+		CniType: util.CniTypeName, PodName: "pod", PodNamespace: "ns", Provider: provider, IfName: "net1",
+	}
+
+	for name, annotations := range map[string]map[string]string{
+		"annotated subnet does not exist": {fmt.Sprintf(util.LogicalSwitchAnnotationTemplate, provider): "missing"},
+		"no annotation":                   {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			annotations[fmt.Sprintf(util.IPAddressAnnotationTemplate, provider)] = "10.0.0.2"
+			annotations[fmt.Sprintf(util.CidrAnnotationTemplate, provider)] = "10.0.0.0/24"
+			pod := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "pod", Namespace: "ns", Annotations: annotations}}
+			recorder := &cniEventRecorder{}
+			handler := cniEventTestHandler(t, pod, customerSubnet, recorder)
+
+			response := serveCNIRequest(t, handler, "/api/v1/add", req)
+			require.Equal(t, http.StatusBadRequest, response.Code)
+			require.Contains(t, requireSingleCNIEvent(t, recorder).message, "stage=provider")
+		})
+	}
+}
+
 func TestHandleAddFailureEvent(t *testing.T) {
 	recorder := &cniEventRecorder{}
 	handler := cniEventTestHandler(t, nil, nil, recorder)

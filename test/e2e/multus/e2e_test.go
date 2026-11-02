@@ -533,6 +533,39 @@ var _ = framework.SerialDescribe("[group:multus]", func() {
 		framework.ExpectEmpty(pod.Annotations[fmt.Sprintf(util.LogicalSwitchAnnotationTemplate, provider)], "attachment should not fall back to the default subnet")
 	})
 
+	framework.ConformanceIt("should attach to a subnet named by the pod annotation when the provider has no subnet", func() {
+		provider := fmt.Sprintf("%s.%s.%s", nadName, namespaceName, util.OvnProvider)
+
+		ginkgo.By("Creating network attachment definition " + nadName)
+		nad := framework.MakeOVNNetworkAttachmentDefinition(nadName, namespaceName, provider, nil)
+		nad = nadClient.Create(nad)
+
+		ginkgo.By("Creating subnet " + subnetName + " that belongs to the default provider")
+		subnet = framework.MakeSubnet(subnetName, "", cidr, "", "", "", nil, nil, nil)
+		subnet = subnetClient.CreateSync(subnet)
+
+		ginkgo.By("Creating pod " + podName)
+		annotations := map[string]string{
+			nadv1.NetworkAttachmentAnnot:                                fmt.Sprintf("%s/%s", nad.Namespace, nad.Name),
+			fmt.Sprintf(util.LogicalSwitchAnnotationTemplate, provider): subnetName,
+		}
+		pod := framework.MakePrivilegedPod(namespaceName, podName, nil, annotations, f.FabricImage, []string{"sleep", "infinity"}, nil)
+		pod = podClient.CreateSync(pod)
+
+		ginkgo.By("Validating pod annotations")
+		framework.ExpectHaveKey(pod.Annotations, nadv1.NetworkStatusAnnot)
+		framework.ExpectHaveKeyWithValue(pod.Annotations, fmt.Sprintf(util.LogicalSwitchAnnotationTemplate, provider), subnetName)
+		framework.ExpectHaveKeyWithValue(pod.Annotations, fmt.Sprintf(util.AllocatedAnnotationTemplate, provider), "true")
+		ip := pod.Annotations[fmt.Sprintf(util.IPAddressAnnotationTemplate, provider)]
+		framework.ExpectIPInCIDR(ip, subnet.Spec.CIDRBlock)
+
+		ipName := ovs.PodNameToPortName(podName, namespaceName, provider)
+		ginkgo.By("Validating IP resource " + ipName)
+		ipCR := ipClient.Get(ipName)
+		framework.ExpectEqual(ipCR.Spec.Subnet, subnetName)
+		framework.ExpectEqual(ipCR.Spec.IPAddress, ip)
+	})
+
 	framework.ConformanceIt("should be able to create attachment interface with custom routes", func() {
 		provider := fmt.Sprintf("%s.%s.%s", nadName, namespaceName, util.OvnProvider)
 

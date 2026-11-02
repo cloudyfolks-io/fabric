@@ -143,6 +143,19 @@ func (csh cniServerHandler) providerExists(provider, ifName string) (*fabricv1.S
 	return nil, false
 }
 
+func (csh cniServerHandler) annotatedSubnet(pod *v1.Pod, provider, ifName string, appendIfName bool) *fabricv1.Subnet {
+	subnetName := util.GetAnnotationWithIfNameOverride(pod.Annotations, provider, ifName, util.LogicalSwitchAnnotationTemplate, appendIfName)
+	if subnetName == "" {
+		return nil
+	}
+	subnet, err := csh.Controller.subnetsLister.Get(subnetName)
+	if err != nil {
+		klog.Errorf("failed to get subnet %s named by pod %s/%s for provider %s: %v", subnetName, pod.Namespace, pod.Name, provider, err)
+		return nil
+	}
+	return subnet.DeepCopy()
+}
+
 func isMacOnlyAllocation(annotations map[string]string, provider, ifName string, appendIfName bool) bool {
 	return util.GetAnnotationWithIfNameOverride(annotations, provider, ifName, util.IPAddressAnnotationTemplate, appendIfName) == "" &&
 		util.GetAnnotationWithIfNameOverride(annotations, provider, ifName, util.AllocatedAnnotationTemplate, appendIfName) == "true" &&
@@ -166,15 +179,6 @@ func (csh cniServerHandler) handleAdd(req *restful.Request, resp *restful.Respon
 	}
 	klog.V(5).Infof("request body is %v", podRequest)
 	podSubnet, exist := csh.providerExists(podRequest.Provider, podRequest.IfName)
-	if !exist {
-		errMsg := fmt.Errorf("provider %s is not bound to any subnet", podRequest.Provider)
-		klog.Error(errMsg)
-		recordFailure("provider", errMsg)
-		if err := resp.WriteHeaderAndEntity(http.StatusBadRequest, request.CniResponse{Err: errMsg.Error()}); err != nil {
-			klog.Errorf("failed to write response, %v", err)
-		}
-		return
-	}
 
 	klog.Infof("add port request: %v", podRequest)
 	if err := csh.validatePodRequest(&podRequest); err != nil {
@@ -315,6 +319,20 @@ func (csh cniServerHandler) handleAdd(req *restful.Request, resp *restful.Respon
 		}
 
 		break
+	}
+
+	if !exist {
+		podSubnet = csh.annotatedSubnet(pod, podRequest.Provider, podRequest.IfName, appendIfName)
+		exist = podSubnet != nil
+	}
+	if !exist {
+		errMsg := fmt.Errorf("provider %s is not bound to any subnet", podRequest.Provider)
+		klog.Error(errMsg)
+		recordFailure("provider", errMsg)
+		if err := resp.WriteHeaderAndEntity(http.StatusBadRequest, request.CniResponse{Err: errMsg.Error()}); err != nil {
+			klog.Errorf("failed to write response, %v", err)
+		}
+		return
 	}
 
 	if !macOnly && util.GetAnnotationWithIfNameOverride(pod.Annotations, podRequest.Provider, podRequest.IfName, util.IPAddressAnnotationTemplate, appendIfName) == "" {

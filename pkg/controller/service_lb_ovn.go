@@ -311,6 +311,10 @@ func (c *Controller) handleAddOrUpdateOvnLbSvc(key string) error {
 		klog.Error(err)
 		return err
 	}
+	if err = c.replaceEndpointAddressesWithVpcIPs(svc, endpointSlices); err != nil {
+		klog.Error(err)
+		return err
+	}
 	vpcName, _, err := c.getVpcAndSubnetForEndpoints(endpointSlices, svc)
 	if err != nil {
 		klog.Error(err)
