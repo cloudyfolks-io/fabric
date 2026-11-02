@@ -662,7 +662,7 @@ func TestAcquireAddressWithIPFamily(t *testing.T) {
 	})
 }
 
-func TestAcquireAddressNamespaceIPPoolsOnlyForPodWithoutExplicitSubnet(t *testing.T) {
+func TestAcquireAddressNamespaceIPPoolsFollowTheSubnet(t *testing.T) {
 	const poolName = "pool-a"
 	subnetA := &fabricv1.Subnet{
 		ObjectMeta: metav1.ObjectMeta{Name: "subnet-a"},
@@ -713,6 +713,13 @@ func TestAcquireAddressNamespaceIPPoolsOnlyForPodWithoutExplicitSubnet(t *testin
 
 	t.Run("pod without explicit subnet uses the namespace pool", func(t *testing.T) {
 		v4, subnet, err := acquire(t, nil)
+		require.NoError(t, err)
+		assert.Equal(t, "10.0.1.50", v4)
+		assert.Equal(t, "subnet-a", subnet)
+	})
+
+	t.Run("pod with explicit subnet of the pool uses the namespace pool", func(t *testing.T) {
+		v4, subnet, err := acquire(t, map[string]string{util.LogicalSwitchAnnotation: "subnet-a"})
 		require.NoError(t, err)
 		assert.Equal(t, "10.0.1.50", v4)
 		assert.Equal(t, "subnet-a", subnet)

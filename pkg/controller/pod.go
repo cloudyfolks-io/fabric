@@ -2272,7 +2272,7 @@ func (c *Controller) acquireAddress(pod *v1.Pod, podNet *fabricNet) (string, str
 		return "", "", "", podNet.Subnet, err
 	}
 
-	if ippoolStr == "" && podNet.IsDefault && subnetStr == "" {
+	if ippoolStr == "" && podNet.IsDefault {
 		ns, err := c.namespacesLister.Get(pod.Namespace)
 		if err != nil {
 			klog.Errorf("failed to get namespace %s: %v", pod.Namespace, err)
@@ -2290,6 +2290,7 @@ func (c *Controller) acquireAddress(pod *v1.Pod, podNet *fabricNet) (string, str
 
 		if subnetStr == "" || slices.Contains(subnetNames, subnetStr) {
 			if ipPoolList, ok := ns.Annotations[util.IPPoolAnnotation]; ok {
+				poolOnSubnet := false
 				for ipPoolName := range strings.SplitSeq(ipPoolList, ",") {
 					ippool, err := c.ippoolLister.Get(ipPoolName)
 					if err != nil {
@@ -2297,12 +2298,17 @@ func (c *Controller) acquireAddress(pod *v1.Pod, podNet *fabricNet) (string, str
 						return "", "", "", podNet.Subnet, err
 					}
 
+					if !slices.Contains(subnetNames, ippool.Spec.Subnet) {
+						continue
+					}
+					poolOnSubnet = true
+
 					if !ippoolHasAvailableIPFamily(ippool, podNet.Subnet.Spec.Protocol, requestedIPFamily) {
 						continue
 					}
 
 					for _, net := range nsNets {
-						if net.Subnet.Name == ippool.Spec.Subnet && slices.Contains(subnetNames, net.Subnet.Name) {
+						if net.Subnet.Name == ippool.Spec.Subnet {
 							ippoolStr = ippool.Name
 							podNet.Subnet = net.Subnet
 							break
@@ -2312,7 +2318,7 @@ func (c *Controller) acquireAddress(pod *v1.Pod, podNet *fabricNet) (string, str
 						break
 					}
 				}
-				if ippoolStr == "" {
+				if ippoolStr == "" && (subnetStr == "" || poolOnSubnet) {
 					klog.Infof("no available ippool in subnet(s) %s for pod %s/%s", strings.Join(subnetNames, ","), pod.Namespace, pod.Name)
 					return "", "", "", podNet.Subnet, ipam.ErrNoAvailable
 				}
