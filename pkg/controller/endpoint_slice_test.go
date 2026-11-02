@@ -886,7 +886,7 @@ func twoInterfacePod(secondaryIPs string) *corev1.Pod {
 	}
 }
 
-func twoInterfaceService(annotations map[string]string, selector map[string]string) *corev1.Service {
+func twoInterfaceService(annotations, selector map[string]string) *corev1.Service {
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "default", Annotations: annotations},
 		Spec:       corev1.ServiceSpec{Selector: selector},

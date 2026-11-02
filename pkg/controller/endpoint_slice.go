@@ -469,7 +469,7 @@ func (c *Controller) replaceEndpointAddressesWithVpcIPs(svc *v1.Service, endpoin
 			copiedSlice.Endpoints[j].Addresses = addresses
 		}
 		if copiedSlice != nil {
-			endpointSlices[i] = copiedSlice
+			endpointSlices[i] = copiedSlice // #nosec G602
 		}
 	}
 
