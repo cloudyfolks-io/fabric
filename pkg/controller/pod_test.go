@@ -2237,3 +2237,43 @@ func assertRecordedPodEvent(t *testing.T, events <-chan *corev1.Event, pod *core
 		t.Fatal("expected pod event")
 	}
 }
+
+func TestReconcileRouteSubnetsKeepsPortInPolicyGroupsOnSingleNode(t *testing.T) {
+	const nodeName = "node-a"
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "loki-0",
+			Namespace: "monitoring",
+			Annotations: map[string]string{
+				fmt.Sprintf(util.AllocatedAnnotationTemplate, util.OvnProvider):     "true",
+				fmt.Sprintf(util.IPAddressAnnotationTemplate, util.OvnProvider):     "10.16.0.5",
+				fmt.Sprintf(util.LogicalSwitchAnnotationTemplate, util.OvnProvider): util.DefaultSubnet,
+			},
+		},
+		Spec: corev1.PodSpec{NodeName: nodeName},
+	}
+	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{
+		Name:        nodeName,
+		Annotations: map[string]string{util.PortNameAnnotation: "ovn-node-a"},
+	}}
+	subnet := &fabricv1.Subnet{
+		ObjectMeta: metav1.ObjectMeta{Name: util.DefaultSubnet},
+		Spec:       fabricv1.SubnetSpec{Provider: util.OvnProvider, Vpc: util.DefaultVpc},
+	}
+
+	fakeController, err := newFakeControllerWithOptions(t, &FakeControllerOptions{
+		Pods:    []*corev1.Pod{pod},
+		Nodes:   []*corev1.Node{node},
+		Subnets: []*fabricv1.Subnet{subnet},
+	})
+	require.NoError(t, err)
+	controller := fakeController.fakeController
+	mockOvnClient := fakeController.mockOvnClient
+
+	mockOvnClient.EXPECT().ListPortGroups(gomock.Any()).Return([]ovnnb.PortGroup{{Name: "ovn.node.a"}}, nil).AnyTimes()
+	mockOvnClient.EXPECT().PortGroupAddPorts("ovn.node.a", "loki-0.monitoring").Return(nil)
+	mockOvnClient.EXPECT().DeleteLogicalRouterStaticRoute(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil)
+
+	err = controller.reconcileRouteSubnets(pod, []*fabricNet{{ProviderName: util.OvnProvider, Subnet: subnet}})
+	require.NoError(t, err)
+}

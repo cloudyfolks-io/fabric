@@ -825,6 +825,13 @@ func (c *Controller) reconcileAllocateSubnets(pod *v1.Pod, needAllocatePodNets [
 	return pod, nil
 }
 
+func (c *Controller) removePortFromPortGroups(portName string, pgNames []string) error {
+	if len(pgNames) == 0 {
+		return nil
+	}
+	return c.OVNNbClient.RemovePortFromPortGroups(portName, pgNames...)
+}
+
 func (c *Controller) reconcileRouteSubnets(pod *v1.Pod, needRoutePodNets []*fabricNet) error {
 	if len(needRoutePodNets) == 0 {
 		return nil
@@ -890,7 +897,7 @@ func (c *Controller) reconcileRouteSubnets(pod *v1.Pod, needRoutePodNets []*fabr
 			subnet.Spec.U2OInterconnection &&
 			subnet.Spec.Vlan != "" &&
 			!subnet.Spec.LogicalGateway {
-			if err = c.OVNNbClient.RemovePortFromPortGroups(portName, subnetPortGroups...); err != nil {
+			if err = c.removePortFromPortGroups(portName, subnetPortGroups); err != nil {
 				klog.Errorf("failed to remove port %s from port groups %v: %v", portName, subnetPortGroups, err)
 				return err
 			}
@@ -902,7 +909,7 @@ func (c *Controller) reconcileRouteSubnets(pod *v1.Pod, needRoutePodNets []*fabr
 		}
 
 		if podIP != "" && (subnet.Spec.Vlan == "" || subnet.Spec.LogicalGateway) && subnet.Spec.Vpc == c.config.ClusterRouter {
-			if err = c.OVNNbClient.RemovePortFromPortGroups(portName, nodePortGroups...); err != nil {
+			if err = c.removePortFromPortGroups(portName, nodePortGroups); err != nil {
 				klog.Errorf("failed to remove port %s from port groups %v: %v", portName, nodePortGroups, err)
 				return err
 			}
@@ -926,7 +933,7 @@ func (c *Controller) reconcileRouteSubnets(pod *v1.Pod, needRoutePodNets []*fabr
 							continue
 						}
 
-						if err = c.OVNNbClient.RemovePortFromPortGroups(portName, subnetPortGroups...); err != nil {
+						if err = c.removePortFromPortGroups(portName, subnetPortGroups); err != nil {
 							klog.Errorf("failed to remove port %s from port groups %v: %v", portName, subnetPortGroups, err)
 							return err
 						}
