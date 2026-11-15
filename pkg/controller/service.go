@@ -68,6 +68,11 @@ func (c *Controller) enqueueDeleteService(obj any) {
 	if c.ovnLbSvcEnabled() && isOvnLbSvc(svc, c.config.DefaultLoadBalancerClass) {
 		klog.Infof("enqueue release ovn lb service %s/%s", svc.Namespace, svc.Name)
 		c.delOvnLbSvcQueue.Add(newOvnLbSvcRelease(svc, c.config.ClusterRouter))
+		// claimed services are fully owned by the ovn-lb-svc path; the
+		// legacy path mirrors status ingress and cluster IPs into the same
+		// LB rows and would fight the pool allocation (or resurrect VIPs the
+		// pool has just released).
+		return
 	}
 
 	if !c.config.EnableLb {
@@ -113,6 +118,13 @@ func (c *Controller) enqueueUpdateService(oldObj, newObj any) {
 		}
 		if newClaimed {
 			c.addOrUpdateOvnLbSvcQueue.Add(cache.MetaObjectToName(newSvc).String())
+			// claimed services are fully owned by the ovn-lb-svc path; the
+			// legacy path would mirror cluster IPs and status ingress into
+			// the same LB rows and fight the pool allocation. Services
+			// migrating away from the claim (oldClaimed && !newClaimed)
+			// still fall through so the legacy path can release anything the
+			// legacy status carried.
+			return
 		}
 	}
 
