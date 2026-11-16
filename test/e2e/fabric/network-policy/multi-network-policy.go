@@ -251,13 +251,17 @@ var _ = framework.SerialDescribe("[group:network-policy]", func() {
 		}
 	})
 
-	framework.ConformanceIt("should include Service ClusterIP for default VPC provider", func() {
+	framework.ConformanceIt("should enforce egress to Service backends for default VPC provider", func() {
 		ginkgo.By("Creating server pod " + serverPodName)
-		serverLabels := map[string]string{"app": "server"}
+		serverLabels := map[string]string{"app": "server", "group": "backends"}
 		port := 8080
 		serverArgs := []string{"netexec", "--http-port", strconv.Itoa(port)}
 		serverPod := framework.MakePod(namespaceName, serverPodName, serverLabels, nil, framework.AgnhostImage, nil, serverArgs)
 		serverPod = podClient.CreateSync(serverPod)
+		deniedPodName := serverPodName + "-denied"
+		deniedPod := framework.MakePod(namespaceName, deniedPodName, map[string]string{"app": "denied", "group": "backends"}, nil, framework.AgnhostImage, nil, serverArgs)
+		deniedPod = podClient.CreateSync(deniedPod)
+		defer podClient.DeleteSync(deniedPodName)
 
 		ginkgo.By("Creating client pod " + clientPodName)
 		clientLabels := map[string]string{"app": "client"}
@@ -269,6 +273,10 @@ var _ = framework.SerialDescribe("[group:network-policy]", func() {
 		ports := []corev1.ServicePort{{Name: "http", Port: int32(port), TargetPort: intstr.FromInt(port)}}
 		svc := framework.MakeService(serviceName, corev1.ServiceTypeClusterIP, nil, serverLabels, ports, corev1.ServiceAffinityNone)
 		svc = serviceClient.Create(svc)
+		mixedServiceName := serviceName + "-mixed"
+		mixedService := framework.MakeService(mixedServiceName, corev1.ServiceTypeClusterIP, nil, map[string]string{"group": "backends"}, ports, corev1.ServiceAffinityNone)
+		mixedService = serviceClient.Create(mixedService)
+		defer serviceClient.DeleteSync(mixedServiceName)
 
 		ginkgo.By("Creating network policy " + netpolName)
 		netpol := &netv1.NetworkPolicy{
@@ -313,12 +321,29 @@ var _ = framework.SerialDescribe("[group:network-policy]", func() {
 			addresses, err := getAddressSetAddresses(asName)
 			framework.ExpectNoError(err)
 			framework.ExpectContainElement(addresses, serverIP)
-			if clusterIP != "" {
-				framework.ExpectContainElement(addresses, clusterIP)
+			if clusterIP == "" {
+				continue
+			}
+			cmd := "curl -q -s --connect-timeout 2 --max-time 2 http://" + net.JoinHostPort(clusterIP, strconv.Itoa(port)) + "/hostname"
+			framework.WaitUntil(time.Second, time.Minute, func(_ context.Context) (bool, error) {
+				output, _, err := framework.ExecShellInPod(context.Background(), f, namespaceName, clientPod.Name, cmd)
+				return err == nil && strings.TrimSpace(string(output)) == serverPodName, nil
+			}, "the allowed Service reaches the selected pod")
+			deniedIP := podIPsByProtocol(deniedPod)[protocol]
+			deniedCmd := "curl -q -s --connect-timeout 2 --max-time 2 http://" + net.JoinHostPort(deniedIP, strconv.Itoa(port)) + "/hostname"
+			_, _, err = framework.ExecShellInPod(context.Background(), f, namespaceName, clientPod.Name, deniedCmd)
+			framework.ExpectNotNil(err, "the unselected pod must be blocked")
+			mixedIP := serviceClusterIPByProtocol(mixedService, protocol)
+			mixedCmd := "curl -q -s --connect-timeout 2 --max-time 2 http://" + net.JoinHostPort(mixedIP, strconv.Itoa(port)) + "/hostname"
+			for range 10 {
+				output, _, err := framework.ExecShellInPod(context.Background(), f, namespaceName, clientPod.Name, mixedCmd)
+				if err == nil {
+					framework.ExpectEqual(strings.TrimSpace(string(output)), serverPodName, "the mixed Service must not reach the unselected pod")
+				}
 			}
 		}
 	})
-	framework.ConformanceIt("should include Service ClusterIP for default VPC provider with multus default network", func() {
+	framework.ConformanceIt("should reach selected Service backends with multus default network", func() {
 		provider := fmt.Sprintf("%s.%s.%s", nadName, namespaceName, util.OvnProvider)
 
 		ginkgo.By("Creating network attachment definition " + nadName)
@@ -396,7 +421,11 @@ var _ = framework.SerialDescribe("[group:network-policy]", func() {
 			framework.ExpectNoError(err)
 			framework.ExpectContainElement(addresses, providerIP)
 			if clusterIP != "" {
-				framework.ExpectContainElement(addresses, clusterIP)
+				cmd := "curl -q -s --connect-timeout 2 --max-time 2 http://" + net.JoinHostPort(clusterIP, strconv.Itoa(port)) + "/hostname"
+				framework.WaitUntil(time.Second, time.Minute, func(_ context.Context) (bool, error) {
+					output, _, err := framework.ExecShellInPod(context.Background(), f, namespaceName, clientPod.Name, cmd)
+					return err == nil && strings.TrimSpace(string(output)) == serverPodName, nil
+				}, "the Service reaches the selected pod")
 			}
 		}
 	})
