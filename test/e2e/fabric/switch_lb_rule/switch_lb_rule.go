@@ -70,6 +70,8 @@ var _ = framework.Describe("[group:slr]", func() {
 		selSlrName, selSvcName                    string
 		epSlrName, epSvcName                      string
 		nadName                                   string
+		loadBalancerName                          string
+		loadBalancerCreated                       bool
 		overlaySubnetCidr, vip                    string
 
 		frontPort, selSlrFrontPort, epSlrFrontPort, backendPort int32
@@ -96,6 +98,8 @@ var _ = framework.Describe("[group:slr]", func() {
 		clientPodName = "client-" + suffix
 		subnetName = generateSubnetName(suffix)
 		nadName = subnetName
+		loadBalancerName = "test-" + suffix
+		loadBalancerCreated = false
 		vpcName = generateVpcName(suffix)
 		frontPort = 8090
 		selSlrFrontPort = 8091
@@ -109,6 +113,14 @@ var _ = framework.Describe("[group:slr]", func() {
 	})
 
 	ginkgo.AfterEach(func() {
+		if loadBalancerCreated {
+			ginkgo.By("Deleting load balancer " + loadBalancerName)
+			err := f.FabricClientSet.FabricV1().LoadBalancers().Delete(context.Background(), loadBalancerName, metav1.DeleteOptions{})
+			if err != nil && !k8serrors.IsNotFound(err) {
+				framework.ExpectNoError(err)
+			}
+			framework.ExpectNoError(switchLBRuleClient.WaitToDisappear("flb-"+loadBalancerName, 0, 2*time.Minute))
+		}
 		ginkgo.By("Deleting client pod " + clientPodName)
 		podClient.DeleteGracefully(clientPodName)
 		ginkgo.By("Deleting statefulset " + stsName)
@@ -425,14 +437,16 @@ var _ = framework.Describe("[group:slr]", func() {
 			fmt.Sprintf(util.LogicalSwitchAnnotationTemplate, provider): subnetName,
 		}
 		ginkgo.By("Creating statefulset " + stsName + " with a secondary interface in subnet " + subnetName)
-		sts := framework.MakeStatefulSet(stsName, stsSvcName, 1, map[string]string{"app": label}, framework.AgnhostImage)
+		sts := framework.MakeStatefulSet(stsName, stsSvcName, 2, map[string]string{"app": label}, framework.AgnhostImage)
 		sts.Spec.Template.Annotations = podAnnotations
 		sts.Spec.Template.Spec.Containers[0].Command = []string{"/agnhost", "netexec", "--http-port", "80"}
 		_ = stsClient.CreateSync(sts)
 		pods := stsClient.GetPods(sts)
-		framework.ExpectHaveLen(pods.Items, 1)
+		framework.ExpectHaveLen(pods.Items, 2)
 		secondaryIP := pods.Items[0].Annotations[fmt.Sprintf(util.IPAddressAnnotationTemplate, provider)]
+		secondIP := pods.Items[1].Annotations[fmt.Sprintf(util.IPAddressAnnotationTemplate, provider)]
 		framework.ExpectIPInCIDR(secondaryIP, overlaySubnetCidr)
+		framework.ExpectIPInCIDR(secondIP, overlaySubnetCidr)
 		framework.ExpectNotEqual(pods.Items[0].Status.PodIP, secondaryIP)
 
 		vip = framework.RandomIPs(overlaySubnetCidr, "", 1)
@@ -443,7 +457,8 @@ var _ = framework.Describe("[group:slr]", func() {
 			util.LogicalSwitchAnnotation: subnetName,
 			util.ServiceHealthCheck:      "false",
 		}
-		rule := framework.MakeSwitchLBRule(selSlrName, namespaceName, vip, corev1.ServiceAffinityNone, slrAnnotations, []string{"app:" + label}, nil, slrPorts)
+		selectorKey := "statefulset.kubernetes.io/pod-name:"
+		rule := framework.MakeSwitchLBRule(selSlrName, namespaceName, vip, corev1.ServiceAffinityNone, slrAnnotations, []string{selectorKey + pods.Items[0].Name}, nil, slrPorts)
 		_ = switchLBRuleClient.Create(rule)
 
 		ginkgo.By("Waiting for the VPC load balancer to use the secondary interface address as backend")
@@ -464,6 +479,46 @@ var _ = framework.Describe("[group:slr]", func() {
 		output, _, err := framework.NBExec(cmd)
 		framework.ExpectNoError(err)
 		framework.ExpectNotContainSubstring(string(output), util.JoinHostPort(pods.Items[0].Status.PodIP, backendPort))
+
+		ginkgo.By("Moving the selector to the second secondary interface")
+		updated := rule.DeepCopy()
+		updated.Spec.Selector = []string{selectorKey + pods.Items[1].Name}
+		_ = switchLBRuleClient.Patch(rule, updated)
+		secondBackend := util.JoinHostPort(secondIP, backendPort)
+		framework.WaitUntil(2*time.Second, time.Minute, func(_ context.Context) (bool, error) {
+			output, _, err := framework.NBExec(cmd)
+			if err != nil {
+				return false, err
+			}
+			return strings.Contains(string(output), secondBackend) && !strings.Contains(string(output), wantBackend), nil
+		}, "the selector moves the backend to the second interface")
+
+		ginkgo.By("Creating a LoadBalancer with the same secondary interface selector")
+		lb := &fabricv1.LoadBalancer{
+			ObjectMeta: metav1.ObjectMeta{Name: loadBalancerName},
+			Spec: fabricv1.LoadBalancerSpec{
+				Vpc:       vpcName,
+				Frontend:  fabricv1.LoadBalancerFrontend{Vip: vip},
+				Namespace: namespaceName,
+				Selector:  []string{selectorKey + pods.Items[1].Name},
+				Ports:     []fabricv1.LoadBalancerPort{{Name: "http", Port: epSlrFrontPort, TargetPort: backendPort, Protocol: "TCP"}},
+			},
+		}
+		_, err = f.FabricClientSet.FabricV1().LoadBalancers().Create(context.Background(), lb, metav1.CreateOptions{})
+		framework.ExpectNoError(err)
+		loadBalancerCreated = true
+		framework.WaitUntil(2*time.Second, time.Minute, func(_ context.Context) (bool, error) {
+			output, _, err := framework.NBExec(cmd)
+			if err != nil {
+				return false, err
+			}
+			for _, mapping := range strings.Fields(string(output)) {
+				if strings.Contains(mapping, util.JoinHostPort(vip, epSlrFrontPort)) && strings.Contains(mapping, secondBackend) {
+					return !strings.Contains(mapping, util.JoinHostPort(pods.Items[1].Status.PodIP, backendPort)), nil
+				}
+			}
+			return false, nil
+		}, "the LoadBalancer uses the secondary interface")
 	})
 
 	ginkgo.It("should not delete VIPs in other VPCs when deleting SLR with same VIP IP", func() {
