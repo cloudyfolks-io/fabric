@@ -1,11 +1,17 @@
 name: Update x86 E2E gate
 
 on:
+  schedule:
+    - cron: '*/15 * * * *'
   workflow_run:
     workflows: [Build x86 Image]
     types: [completed]
   workflow_dispatch:
     inputs:
+      executorRunID:
+        description: Recover a completed trusted executor when workflow_run delivery is missing
+        required: false
+        type: string
       prNumber:
         description: Pull request number with a durable approval marker
         required: true
@@ -51,12 +57,36 @@ permissions:
   pull-requests: read
 
 jobs:
+  discover:
+    name: Find a completed executor with an undelivered gate result
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+      pull-requests: read
+    outputs:
+      runId: ${{ steps.recovery.outputs.runId }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - id: recovery
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 hack/e2e_gate_recovery.py
+
   gate:
     name: Evaluate x86-e2e / required-gate
+    needs: [discover]
     if: >-
-      github.event_name == 'workflow_run' &&
+      always() && (
+      (github.event_name == 'schedule' && needs.discover.outputs.runId != '') ||
+      (github.event_name == 'workflow_dispatch' && inputs.executorRunID != '') ||
+      (github.event_name == 'workflow_run' &&
       (github.event.workflow_run.event == 'pull_request' ||
-       github.event.workflow_run.event == 'workflow_dispatch')
+       github.event.workflow_run.event == 'workflow_dispatch')))
     outputs:
       mutate: ${{ steps.mutation.outputs.mutate }}
       status: ${{ steps.mutation.outputs.status }}
@@ -75,9 +105,9 @@ jobs:
       trustedExecution: ${{ steps.context.outputs.trustedExecution }}
       runAction: ${{ steps.context.outputs.runAction }}
       runAttempt: ${{ steps.context.outputs.runAttempt }}
-      runId: ${{ github.event.workflow_run.id }}
-      runURL: ${{ github.event.workflow_run.html_url }}
-      runEvent: ${{ github.event.workflow_run.event }}
+      runId: ${{ steps.context.outputs.runId }}
+      runURL: ${{ steps.context.outputs.runURL }}
+      runEvent: ${{ steps.context.outputs.runEvent }}
       trustedRef: ${{ steps.context.outputs.trustedRef }}
     runs-on: ubuntu-24.04
     env:
@@ -105,8 +135,35 @@ jobs:
           RUN_PULL_REQUESTS: ${{ toJSON(github.event.workflow_run.pull_requests) }}
           RUN_TRIGGERING_ACTOR: ${{ github.event.workflow_run.triggering_actor.login }}
           RUN_WORKFLOW_SHA: ${{ github.event.workflow_run.head_sha }}
+          RECOVERY_RUN_ID: ${{ inputs.executorRunID || needs.discover.outputs.runId }}
         run: |
           set -euo pipefail
+          if [ -n "$RECOVERY_RUN_ID" ]; then
+            [[ "$RECOVERY_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+            # Dispatch is explicit because workflow_run delivery is not guaranteed.
+            # Never trust dispatch inputs for identity, SHA, approval, or result.
+            for _ in $(seq 1 120); do
+              gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RECOVERY_RUN_ID" > recovery-run.json
+              [ "$(jq -r '.status' recovery-run.json)" = completed ] && break
+              sleep 5
+            done
+            jq -e --arg repository "$GITHUB_REPOSITORY" '
+              .status == "completed" and .event == "workflow_dispatch" and
+              .path == ".github/workflows/build-x86-image.yaml" and
+              .head_repository.full_name == $repository and
+              .actor.login == "github-actions[bot]"
+            ' recovery-run.json > /dev/null
+            RUN_ACTION=completed
+            RUN_ACTOR=$(jq -r '.actor.login' recovery-run.json)
+            RUN_ATTEMPT=$(jq -r '.run_attempt' recovery-run.json)
+            RUN_EVENT=$(jq -r '.event' recovery-run.json)
+            RUN_HEAD_BRANCH=$(jq -r '.head_branch' recovery-run.json)
+            RUN_ID="$RECOVERY_RUN_ID"
+            RUN_NAME=$(jq -r '.display_title' recovery-run.json)
+            RUN_PATH=$(jq -r '.path' recovery-run.json)
+            RUN_TRIGGERING_ACTOR=$(jq -r '.triggering_actor.login' recovery-run.json)
+            RUN_WORKFLOW_SHA=$(jq -r '.head_sha' recovery-run.json)
+          fi
           if [ "$RUN_PATH" != '.github/workflows/build-x86-image.yaml' ]; then
             echo 'workflow_run did not originate from the trusted executor path.' >&2
             exit 1
@@ -334,6 +391,10 @@ jobs:
             echo 'skip=false'
             echo "runAction=$RUN_ACTION"
             echo "runAttempt=$RUN_ATTEMPT"
+            echo "runId=$RUN_ID"
+            echo "runURL=$(jq -r '.html_url' context-run-state.json)"
+            echo "runEvent=$RUN_EVENT"
+            echo "runConclusion=$(jq -r '.conclusion // ""' context-run-state.json)"
             echo "prNumber=$prNumber"
             echo "expectedHead=$expectedHead"
             echo "expectedBase=$expectedBase"
@@ -359,8 +420,8 @@ jobs:
         env:
           HEAD_SHA: ${{ steps.context.outputs.expectedHead }}
           PR_NUMBER: ${{ steps.context.outputs.prNumber }}
-          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
-          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_ATTEMPT: ${{ steps.context.outputs.runAttempt }}
+          RUN_ID: ${{ steps.context.outputs.runId }}
         run: |
           set -euo pipefail
           gh api --paginate --slurp \
@@ -474,7 +535,7 @@ jobs:
           EXECUTED_PLAN_FILE: ${{ runner.temp }}/executed-selection-plan.json
           EXECUTED_PLAN_FOUND: ${{ steps.executedPlan.outputs.found }}
           EXPECTED_CATALOG_REVISION: ${{ steps.context.outputs.expectedCatalogRevision }}
-          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          RUN_CONCLUSION: ${{ steps.context.outputs.runConclusion }}
           TRUSTED_EXECUTION: ${{ steps.context.outputs.trustedExecution }}
         run: |
           python3 - <<'PY'
@@ -513,8 +574,8 @@ jobs:
           PR_NUMBER: ${{ steps.context.outputs.prNumber }}
           REQUEST_KEY: ${{ steps.context.outputs.requestKey }}
           RUN_ATTEMPT: ${{ steps.context.outputs.runAttempt }}
-          RUN_ID: ${{ github.event.workflow_run.id }}
-          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          RUN_ID: ${{ steps.context.outputs.runId }}
+          RUN_URL: ${{ steps.context.outputs.runURL }}
         run: |
           conclusion=$(jq -r '.conclusion' gate-decision.json)
           summary=$(jq -r '.summary' gate-decision.json)
@@ -548,13 +609,13 @@ jobs:
         if: steps.mutation.outputs.mutate == 'true'
         uses: actions/upload-artifact@v7
         with:
-          name: x86-e2e-gate-decision-${{ github.event.workflow_run.id }}-${{ steps.context.outputs.runAttempt }}
+          name: x86-e2e-gate-decision-${{ steps.context.outputs.runId }}-${{ steps.context.outputs.runAttempt }}
           path: gate-mutation.json
           retention-days: 7
 
   approval:
     name: Reconcile a durable x86 E2E approval
-    if: github.event_name == 'workflow_dispatch' && github.actor == 'github-actions[bot]'
+    if: github.event_name == 'workflow_dispatch' && inputs.executorRunID == '' && github.actor == 'github-actions[bot]'
     outputs:
       mutate: ${{ steps.request.outputs.mutate }}
       status: ${{ steps.request.outputs.status }}
@@ -972,7 +1033,7 @@ jobs:
               artifactId=''
               for _ in $(seq 1 12); do
                 gh api --paginate --slurp \
-                  "repos/$GITHUB_REPOSITORY/actions/workflows/$trustedGateWorkflowId/runs?event=workflow_run&branch=$defaultBranch&actor=github-actions%5Bbot%5D&per_page=100" \
+                  "repos/$GITHUB_REPOSITORY/actions/workflows/$trustedGateWorkflowId/runs?branch=$defaultBranch&per_page=100" \
                   > trusted-gate-run-pages.json
                 jq -r \
                   --argjson workflowId "$trustedGateWorkflowId" \
@@ -981,8 +1042,8 @@ jobs:
                   '[.[].workflow_runs[] | select(
                     .workflow_id == $workflowId and
                     .path == ".github/workflows/x86-e2e-gate.yaml" and
-                    .event == "workflow_run" and
-                    .actor.login == "github-actions[bot]" and
+                    ((.event == "workflow_run" and .actor.login == "github-actions[bot]") or
+                     .event == "schedule" or .event == "workflow_dispatch") and
                     .head_repository.full_name == $repository and
                     .head_branch == $defaultBranch)]
                    | sort_by(.created_at) | reverse[] | .id' trusted-gate-run-pages.json \
@@ -1237,7 +1298,7 @@ jobs:
                   artifactId=''
                   for _ in $(seq 1 12); do
                     gh api --paginate --slurp \
-                      "repos/$GITHUB_REPOSITORY/actions/workflows/$trustedGateWorkflowId/runs?event=workflow_run&branch=$defaultBranch&actor=github-actions%5Bbot%5D&per_page=100" \
+                      "repos/$GITHUB_REPOSITORY/actions/workflows/$trustedGateWorkflowId/runs?branch=$defaultBranch&per_page=100" \
                       > high-water-gate-run-pages.json
                     jq -r \
                       --argjson workflowId "$trustedGateWorkflowId" \
@@ -1246,8 +1307,8 @@ jobs:
                       '[.[].workflow_runs[] | select(
                         .workflow_id == $workflowId and
                         .path == ".github/workflows/x86-e2e-gate.yaml" and
-                        .event == "workflow_run" and
-                        .actor.login == "github-actions[bot]" and
+                        ((.event == "workflow_run" and .actor.login == "github-actions[bot]") or
+                         .event == "schedule" or .event == "workflow_dispatch") and
                         .head_repository.full_name == $repository and
                         .head_branch == $defaultBranch)]
                        | sort_by(.created_at) | reverse[] | .id' high-water-gate-run-pages.json \
