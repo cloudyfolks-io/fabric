@@ -327,7 +327,7 @@ var _ = framework.SerialDescribe("[group:network-policy]", func() {
 			cmd := "curl -q -s --connect-timeout 2 --max-time 2 http://" + net.JoinHostPort(clusterIP, strconv.Itoa(port)) + "/hostname"
 			framework.WaitUntil(time.Second, time.Minute, func(_ context.Context) (bool, error) {
 				output, _, err := framework.ExecShellInPod(context.Background(), f, namespaceName, clientPod.Name, cmd)
-				return err == nil && strings.TrimSpace(string(output)) == serverPodName, nil
+				return err == nil && strings.TrimSpace(output) == serverPodName, nil
 			}, "the allowed Service reaches the selected pod")
 			deniedIP := podIPsByProtocol(deniedPod)[protocol]
 			deniedCmd := "curl -q -s --connect-timeout 2 --max-time 2 http://" + net.JoinHostPort(deniedIP, strconv.Itoa(port)) + "/hostname"
@@ -338,7 +338,7 @@ var _ = framework.SerialDescribe("[group:network-policy]", func() {
 			for range 10 {
 				output, _, err := framework.ExecShellInPod(context.Background(), f, namespaceName, clientPod.Name, mixedCmd)
 				if err == nil {
-					framework.ExpectEqual(strings.TrimSpace(string(output)), serverPodName, "the mixed Service must not reach the unselected pod")
+					framework.ExpectEqual(strings.TrimSpace(output), serverPodName, "the mixed Service must not reach the unselected pod")
 				}
 			}
 		}
@@ -424,7 +424,7 @@ var _ = framework.SerialDescribe("[group:network-policy]", func() {
 				cmd := "curl -q -s --connect-timeout 2 --max-time 2 http://" + net.JoinHostPort(clusterIP, strconv.Itoa(port)) + "/hostname"
 				framework.WaitUntil(time.Second, time.Minute, func(_ context.Context) (bool, error) {
 					output, _, err := framework.ExecShellInPod(context.Background(), f, namespaceName, clientPod.Name, cmd)
-					return err == nil && strings.TrimSpace(string(output)) == serverPodName, nil
+					return err == nil && strings.TrimSpace(output) == serverPodName, nil
 				}, "the Service reaches the selected pod")
 			}
 		}
