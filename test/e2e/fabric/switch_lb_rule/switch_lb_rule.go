@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/onsi/ginkgo/v2"
@@ -400,6 +401,70 @@ var _ = framework.Describe("[group:slr]", func() {
 		ginkgo.Entry("SLR with default provider", false),
 		ginkgo.Entry("SLR with custom provider", true),
 	)
+
+	ginkgo.It("should use the secondary interface address as backend for a VPC rule", func() {
+		if !isMultusInstalled(f) {
+			ginkgo.Skip("Multus must be activated to run this test")
+		}
+		if f.IsDual() {
+			ginkgo.Skip("This test requires a single-stack cluster")
+		}
+
+		provider := fmt.Sprintf("%s.%s.%s", nadName, namespaceName, util.OvnProvider)
+
+		ginkgo.By("Creating subnet " + subnetName + " in VPC " + vpcName)
+		overlaySubnet := framework.MakeSubnet(subnetName, "", overlaySubnetCidr, "", vpcName, "", nil, nil, nil)
+		_ = subnetClient.CreateSync(overlaySubnet)
+
+		ginkgo.By("Creating network attachment definition " + nadName)
+		nad := framework.MakeOVNNetworkAttachmentDefinition(nadName, namespaceName, provider, []request.Route{})
+		nadClient.Create(nad)
+
+		podAnnotations := map[string]string{
+			"k8s.v1.cni.cncf.io/networks":                               fmt.Sprintf("%s/%s", namespaceName, nadName),
+			fmt.Sprintf(util.LogicalSwitchAnnotationTemplate, provider): subnetName,
+		}
+		ginkgo.By("Creating statefulset " + stsName + " with a secondary interface in subnet " + subnetName)
+		sts := framework.MakeStatefulSet(stsName, stsSvcName, 1, map[string]string{"app": label}, framework.AgnhostImage)
+		sts.Spec.Template.Annotations = podAnnotations
+		sts.Spec.Template.Spec.Containers[0].Command = []string{"/agnhost", "netexec", "--http-port", "80"}
+		_ = stsClient.CreateSync(sts)
+		pods := stsClient.GetPods(sts)
+		framework.ExpectHaveLen(pods.Items, 1)
+		secondaryIP := pods.Items[0].Annotations[fmt.Sprintf(util.IPAddressAnnotationTemplate, provider)]
+		framework.ExpectIPInCIDR(secondaryIP, overlaySubnetCidr)
+		framework.ExpectNotEqual(pods.Items[0].Status.PodIP, secondaryIP)
+
+		vip = framework.RandomIPs(overlaySubnetCidr, "", 1)
+		ginkgo.By("Creating selector SwitchLBRule " + selSlrName + " with vip " + vip)
+		slrPorts := []fabricv1.SwitchLBRulePort{{Name: "http", Port: selSlrFrontPort, TargetPort: backendPort, Protocol: "TCP"}}
+		slrAnnotations := map[string]string{
+			util.LogicalRouterAnnotation: vpcName,
+			util.LogicalSwitchAnnotation: subnetName,
+			util.ServiceHealthCheck:      "false",
+		}
+		rule := framework.MakeSwitchLBRule(selSlrName, namespaceName, vip, corev1.ServiceAffinityNone, slrAnnotations, []string{"app:" + label}, nil, slrPorts)
+		_ = switchLBRuleClient.Create(rule)
+
+		ginkgo.By("Waiting for the VPC load balancer to use the secondary interface address as backend")
+		lbName := vpcClient.Get(vpcName).Status.TCPLoadBalancer
+		framework.ExpectNotEmpty(lbName)
+		cmd := fmt.Sprintf("ovn-nbctl --format=list --data=bare --no-heading --columns=vips find load_balancer name=%s", lbName)
+		wantVIP := util.JoinHostPort(vip, selSlrFrontPort)
+		wantBackend := util.JoinHostPort(secondaryIP, backendPort)
+		framework.WaitUntil(2*time.Second, time.Minute, func(_ context.Context) (bool, error) {
+			output, _, err := framework.NBExec(cmd)
+			if err != nil {
+				return false, err
+			}
+			vips := string(output)
+			return strings.Contains(vips, wantVIP) && strings.Contains(vips, wantBackend), nil
+		}, fmt.Sprintf("load balancer %s maps %s to %s", lbName, wantVIP, wantBackend))
+
+		output, _, err := framework.NBExec(cmd)
+		framework.ExpectNoError(err)
+		framework.ExpectNotContainSubstring(string(output), util.JoinHostPort(pods.Items[0].Status.PodIP, backendPort))
+	})
 
 	ginkgo.It("should not delete VIPs in other VPCs when deleting SLR with same VIP IP", func() {
 		f.SkipVersionPriorTo(1, 16, "This fix was introduced in v1.16")

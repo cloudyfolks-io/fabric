@@ -52,10 +52,23 @@ func TestLoadBalancer_VipFrontendTranslatesToSwitchRule(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "100.69.0.10", child.Spec.Vip)
 	assert.Equal(t, "t-abc", child.Spec.Namespace)
-	assert.Empty(t, child.Annotations, "placement comes from endpoint discovery, not annotations")
+	assert.Equal(t, map[string]string{util.LogicalRouterAnnotation: "vpc1"}, child.Annotations, "only the vpc is declared; the subnet comes from endpoint discovery")
 	assert.Equal(t, "lb1", child.Labels[util.LoadBalancerOwnerLabel])
 	require.Len(t, child.Spec.Ports, 1)
 	assert.Equal(t, int32(8080), child.Spec.Ports[0].TargetPort)
+}
+
+func TestLoadBalancer_VipFrontendWithoutVpcDeclaresNoRouter(t *testing.T) {
+	lb := makeUnifiedLB("lb-novpc", fabricv1.LoadBalancerFrontend{Vip: "100.69.0.10"})
+	lb.Spec.Vpc = ""
+	fc, err := newFakeControllerWithOptions(t, &FakeControllerOptions{LoadBalancers: []*fabricv1.LoadBalancer{lb}})
+	require.NoError(t, err)
+
+	require.NoError(t, fc.fakeController.handleAddOrUpdateLoadBalancer("lb-novpc"))
+
+	child, err := fc.fakeController.config.FabricClient.FabricV1().SwitchLBRules().Get(context.Background(), "flb-lb-novpc", metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.Empty(t, child.Annotations)
 }
 
 func TestLoadBalancer_EipFrontendTranslatesToRouterRule(t *testing.T) {

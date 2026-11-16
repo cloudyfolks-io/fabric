@@ -93,10 +93,15 @@ func (c *Controller) handleAddOrUpdateLoadBalancer(name string) error {
 		}
 		vip := lb.Spec.Frontend.Vip
 
+		var childAnnotations map[string]string
+		if lb.Spec.Vpc != "" {
+			childAnnotations = map[string]string{util.LogicalRouterAnnotation: lb.Spec.Vpc}
+		}
 		desired := &fabricv1.SwitchLBRule{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:   child,
-				Labels: childLabels,
+				Name:        child,
+				Labels:      childLabels,
+				Annotations: childAnnotations,
 			},
 			Spec: fabricv1.SwitchLBRuleSpec{
 				Vip:             vip,

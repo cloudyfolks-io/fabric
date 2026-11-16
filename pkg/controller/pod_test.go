@@ -662,6 +662,77 @@ func TestAcquireAddressWithIPFamily(t *testing.T) {
 	})
 }
 
+func TestAcquireAddressNamespaceIPPoolsFollowTheSubnet(t *testing.T) {
+	const poolName = "pool-a"
+	subnetA := &fabricv1.Subnet{
+		ObjectMeta: metav1.ObjectMeta{Name: "subnet-a"},
+		Spec:       fabricv1.SubnetSpec{CIDRBlock: "10.0.1.0/24", Protocol: fabricv1.ProtocolIPv4, Provider: util.OvnProvider},
+		Status:     fabricv1.SubnetStatus{V4AvailableIPs: internal.NewBigInt(100)},
+	}
+	subnetB := &fabricv1.Subnet{
+		ObjectMeta: metav1.ObjectMeta{Name: "subnet-b"},
+		Spec:       fabricv1.SubnetSpec{CIDRBlock: "10.0.2.0/24", Protocol: fabricv1.ProtocolIPv4, Provider: util.OvnProvider},
+		Status:     fabricv1.SubnetStatus{V4AvailableIPs: internal.NewBigInt(100)},
+	}
+	ippool := &fabricv1.IPPool{
+		ObjectMeta: metav1.ObjectMeta{Name: poolName},
+		Spec:       fabricv1.IPPoolSpec{Subnet: "subnet-a", IPs: []string{"10.0.1.50"}},
+		Status:     fabricv1.IPPoolStatus{V4AvailableIPs: internal.NewBigInt(1)},
+	}
+	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name: "default",
+		Annotations: map[string]string{
+			util.LogicalSwitchAnnotation: "subnet-a,subnet-b",
+			util.IPPoolAnnotation:        poolName,
+		},
+	}}
+
+	acquire := func(t *testing.T, annotations map[string]string) (string, string, error) {
+		t.Helper()
+		pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "test-pod", Namespace: "default", Annotations: annotations}}
+		fakeCtrl, err := newFakeControllerWithOptions(t, &FakeControllerOptions{
+			Namespaces: []*corev1.Namespace{namespace},
+			Subnets:    []*fabricv1.Subnet{subnetA, subnetB},
+			IPPools:    []*fabricv1.IPPool{ippool},
+			Pods:       []*corev1.Pod{pod},
+		})
+		require.NoError(t, err)
+		ctrl := fakeCtrl.fakeController
+		ctrl.ipam = newIPAMForTest([]*fabricv1.Subnet{subnetA, subnetB})
+		require.NoError(t, ctrl.ipam.AddOrUpdateIPPool("subnet-a", poolName, ippool.Spec.IPs))
+
+		podNets, err := ctrl.getPodFabricNets(pod)
+		require.NoError(t, err)
+		require.NotEmpty(t, podNets)
+		v4, _, _, subnet, err := ctrl.acquireAddress(pod, podNets[0])
+		if err != nil {
+			return "", "", err
+		}
+		return v4, subnet.Name, nil
+	}
+
+	t.Run("pod without explicit subnet uses the namespace pool", func(t *testing.T) {
+		v4, subnet, err := acquire(t, nil)
+		require.NoError(t, err)
+		assert.Equal(t, "10.0.1.50", v4)
+		assert.Equal(t, "subnet-a", subnet)
+	})
+
+	t.Run("pod with explicit subnet of the pool uses the namespace pool", func(t *testing.T) {
+		v4, subnet, err := acquire(t, map[string]string{util.LogicalSwitchAnnotation: "subnet-a"})
+		require.NoError(t, err)
+		assert.Equal(t, "10.0.1.50", v4)
+		assert.Equal(t, "subnet-a", subnet)
+	})
+
+	t.Run("pod with explicit subnet outside the pool ignores the namespace pool", func(t *testing.T) {
+		v4, subnet, err := acquire(t, map[string]string{util.LogicalSwitchAnnotation: "subnet-b"})
+		require.NoError(t, err)
+		assert.Equal(t, "10.0.2.1", v4)
+		assert.Equal(t, "subnet-b", subnet)
+	})
+}
+
 func TestIPPoolHasAvailableIPFamily(t *testing.T) {
 	ippool := &fabricv1.IPPool{
 		Status: fabricv1.IPPoolStatus{
@@ -2165,4 +2236,44 @@ func assertRecordedPodEvent(t *testing.T, events <-chan *corev1.Event, pod *core
 	case <-time.After(time.Second):
 		t.Fatal("expected pod event")
 	}
+}
+
+func TestReconcileRouteSubnetsKeepsPortInPolicyGroupsOnSingleNode(t *testing.T) {
+	const nodeName = "node-a"
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "loki-0",
+			Namespace: "monitoring",
+			Annotations: map[string]string{
+				fmt.Sprintf(util.AllocatedAnnotationTemplate, util.OvnProvider):     "true",
+				fmt.Sprintf(util.IPAddressAnnotationTemplate, util.OvnProvider):     "10.16.0.5",
+				fmt.Sprintf(util.LogicalSwitchAnnotationTemplate, util.OvnProvider): util.DefaultSubnet,
+			},
+		},
+		Spec: corev1.PodSpec{NodeName: nodeName},
+	}
+	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{
+		Name:        nodeName,
+		Annotations: map[string]string{util.PortNameAnnotation: "ovn-node-a"},
+	}}
+	subnet := &fabricv1.Subnet{
+		ObjectMeta: metav1.ObjectMeta{Name: util.DefaultSubnet},
+		Spec:       fabricv1.SubnetSpec{Provider: util.OvnProvider, Vpc: util.DefaultVpc},
+	}
+
+	fakeController, err := newFakeControllerWithOptions(t, &FakeControllerOptions{
+		Pods:    []*corev1.Pod{pod},
+		Nodes:   []*corev1.Node{node},
+		Subnets: []*fabricv1.Subnet{subnet},
+	})
+	require.NoError(t, err)
+	controller := fakeController.fakeController
+	mockOvnClient := fakeController.mockOvnClient
+
+	mockOvnClient.EXPECT().ListPortGroups(gomock.Any()).Return([]ovnnb.PortGroup{{Name: "ovn.node.a"}}, nil).AnyTimes()
+	mockOvnClient.EXPECT().PortGroupAddPorts("ovn.node.a", "loki-0.monitoring").Return(nil)
+	mockOvnClient.EXPECT().DeleteLogicalRouterStaticRoute(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil)
+
+	err = controller.reconcileRouteSubnets(pod, []*fabricNet{{ProviderName: util.OvnProvider, Subnet: subnet}})
+	require.NoError(t, err)
 }

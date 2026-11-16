@@ -825,6 +825,13 @@ func (c *Controller) reconcileAllocateSubnets(pod *v1.Pod, needAllocatePodNets [
 	return pod, nil
 }
 
+func (c *Controller) removePortFromPortGroups(portName string, pgNames []string) error {
+	if len(pgNames) == 0 {
+		return nil
+	}
+	return c.OVNNbClient.RemovePortFromPortGroups(portName, pgNames...)
+}
+
 func (c *Controller) reconcileRouteSubnets(pod *v1.Pod, needRoutePodNets []*fabricNet) error {
 	if len(needRoutePodNets) == 0 {
 		return nil
@@ -890,7 +897,7 @@ func (c *Controller) reconcileRouteSubnets(pod *v1.Pod, needRoutePodNets []*fabr
 			subnet.Spec.U2OInterconnection &&
 			subnet.Spec.Vlan != "" &&
 			!subnet.Spec.LogicalGateway {
-			if err = c.OVNNbClient.RemovePortFromPortGroups(portName, subnetPortGroups...); err != nil {
+			if err = c.removePortFromPortGroups(portName, subnetPortGroups); err != nil {
 				klog.Errorf("failed to remove port %s from port groups %v: %v", portName, subnetPortGroups, err)
 				return err
 			}
@@ -902,7 +909,7 @@ func (c *Controller) reconcileRouteSubnets(pod *v1.Pod, needRoutePodNets []*fabr
 		}
 
 		if podIP != "" && (subnet.Spec.Vlan == "" || subnet.Spec.LogicalGateway) && subnet.Spec.Vpc == c.config.ClusterRouter {
-			if err = c.OVNNbClient.RemovePortFromPortGroups(portName, nodePortGroups...); err != nil {
+			if err = c.removePortFromPortGroups(portName, nodePortGroups); err != nil {
 				klog.Errorf("failed to remove port %s from port groups %v: %v", portName, nodePortGroups, err)
 				return err
 			}
@@ -926,7 +933,7 @@ func (c *Controller) reconcileRouteSubnets(pod *v1.Pod, needRoutePodNets []*fabr
 							continue
 						}
 
-						if err = c.OVNNbClient.RemovePortFromPortGroups(portName, subnetPortGroups...); err != nil {
+						if err = c.removePortFromPortGroups(portName, subnetPortGroups); err != nil {
 							klog.Errorf("failed to remove port %s from port groups %v: %v", portName, subnetPortGroups, err)
 							return err
 						}
@@ -2290,6 +2297,7 @@ func (c *Controller) acquireAddress(pod *v1.Pod, podNet *fabricNet) (string, str
 
 		if subnetStr == "" || slices.Contains(subnetNames, subnetStr) {
 			if ipPoolList, ok := ns.Annotations[util.IPPoolAnnotation]; ok {
+				poolOnSubnet := false
 				for ipPoolName := range strings.SplitSeq(ipPoolList, ",") {
 					ippool, err := c.ippoolLister.Get(ipPoolName)
 					if err != nil {
@@ -2297,12 +2305,17 @@ func (c *Controller) acquireAddress(pod *v1.Pod, podNet *fabricNet) (string, str
 						return "", "", "", podNet.Subnet, err
 					}
 
+					if !slices.Contains(subnetNames, ippool.Spec.Subnet) {
+						continue
+					}
+					poolOnSubnet = true
+
 					if !ippoolHasAvailableIPFamily(ippool, podNet.Subnet.Spec.Protocol, requestedIPFamily) {
 						continue
 					}
 
 					for _, net := range nsNets {
-						if net.Subnet.Name == ippool.Spec.Subnet && slices.Contains(subnetNames, net.Subnet.Name) {
+						if net.Subnet.Name == ippool.Spec.Subnet {
 							ippoolStr = ippool.Name
 							podNet.Subnet = net.Subnet
 							break
@@ -2312,7 +2325,7 @@ func (c *Controller) acquireAddress(pod *v1.Pod, podNet *fabricNet) (string, str
 						break
 					}
 				}
-				if ippoolStr == "" {
+				if ippoolStr == "" && (subnetStr == "" || poolOnSubnet) {
 					klog.Infof("no available ippool in subnet(s) %s for pod %s/%s", strings.Join(subnetNames, ","), pod.Namespace, pod.Name)
 					return "", "", "", podNet.Subnet, ipam.ErrNoAvailable
 				}

@@ -6,6 +6,7 @@ import (
 	"sort"
 	"testing"
 
+	nadv1 "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
 	"github.com/puzpuzpuz/xsync/v4"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -554,4 +555,85 @@ func TestEnqueueDeleteNodeEnqueuesExternalVpc(t *testing.T) {
 	ctrl := prepareNodeQueueTestController(t, newExternalVpc("external-vpc", true))
 	ctrl.enqueueDeleteNode(externalGatewayNode("node-a", true))
 	require.Equal(t, []string{"external-vpc"}, drainVpcQueue(t, ctrl))
+}
+
+func TestFetchPodsOnNodeSkipsSecondaryPortsOutsideClusterRouter(t *testing.T) {
+	const (
+		nodeName = "node-a"
+		provider = "vpc.kube-system." + util.OvnProvider
+	)
+
+	newPod := func(name, secondaryRouter string) *corev1.Pod {
+		annotations := map[string]string{
+			nadv1.NetworkAttachmentAnnot: "kube-system/vpc",
+
+			fmt.Sprintf(util.AllocatedAnnotationTemplate, util.OvnProvider):     "true",
+			fmt.Sprintf(util.LogicalSwitchAnnotationTemplate, util.OvnProvider): util.DefaultSubnet,
+			fmt.Sprintf(util.LogicalRouterAnnotationTemplate, util.OvnProvider): util.DefaultVpc,
+
+			fmt.Sprintf(util.AllocatedAnnotationTemplate, provider):     "true",
+			fmt.Sprintf(util.LogicalSwitchAnnotationTemplate, provider): "customer",
+		}
+		if secondaryRouter != "" {
+			annotations[fmt.Sprintf(util.LogicalRouterAnnotationTemplate, provider)] = secondaryRouter
+		}
+		return &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: metav1.NamespaceDefault, Annotations: annotations},
+			Spec:       corev1.PodSpec{NodeName: nodeName},
+			Status:     corev1.PodStatus{Phase: corev1.PodRunning},
+		}
+	}
+	plainPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "plain", Namespace: metav1.NamespaceDefault,
+			Annotations: map[string]string{
+				fmt.Sprintf(util.AllocatedAnnotationTemplate, util.OvnProvider):     "true",
+				fmt.Sprintf(util.LogicalSwitchAnnotationTemplate, util.OvnProvider): util.DefaultSubnet,
+				fmt.Sprintf(util.LogicalRouterAnnotationTemplate, util.OvnProvider): util.DefaultVpc,
+			},
+		},
+		Spec:   corev1.PodSpec{NodeName: nodeName},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning},
+	}
+
+	fc, err := newFakeControllerWithOptions(t, &FakeControllerOptions{
+		Pods: []*corev1.Pod{
+			plainPod,
+			newPod("tenant", "tenant-vpc"),
+			newPod("same-router", util.DefaultVpc),
+			newPod("no-router", ""),
+		},
+		NetworkAttachments: []*nadv1.NetworkAttachmentDefinition{{
+			ObjectMeta: metav1.ObjectMeta{Name: "vpc", Namespace: "kube-system"},
+			Spec: nadv1.NetworkAttachmentDefinitionSpec{
+				Config: `{"cniVersion": "0.3.1", "name": "vpc", "type": "fabric", "provider": "` + provider + `"}`,
+			},
+		}},
+		Subnets: []*fabricv1.Subnet{
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: util.DefaultSubnet},
+				Spec:       fabricv1.SubnetSpec{CIDRBlock: "10.244.0.0/24", Vpc: util.DefaultVpc, Provider: util.OvnProvider},
+			},
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: "customer"},
+				Spec:       fabricv1.SubnetSpec{CIDRBlock: "192.168.1.0/24", Vpc: "tenant-vpc", Provider: util.OvnProvider},
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	ports, err := fc.fakeController.fetchPodsOnNode(nodeName)
+	require.NoError(t, err)
+
+	port := func(pod, provider string) string {
+		return ovs.PodNameToPortName(pod, metav1.NamespaceDefault, provider)
+	}
+	require.ElementsMatch(t, []string{
+		port("plain", util.OvnProvider),
+		port("tenant", util.OvnProvider),
+		port("same-router", util.OvnProvider),
+		port("same-router", provider),
+		port("no-router", util.OvnProvider),
+		port("no-router", provider),
+	}, ports)
 }
