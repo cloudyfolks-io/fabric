@@ -277,6 +277,13 @@ var _ = framework.SerialDescribe("[group:network-policy]", func() {
 		mixedService := framework.MakeService(mixedServiceName, corev1.ServiceTypeClusterIP, nil, map[string]string{"group": "backends"}, ports, corev1.ServiceAffinityNone)
 		mixedService = serviceClient.Create(mixedService)
 		defer serviceClient.DeleteSync(mixedServiceName)
+		for _, deniedIP := range podIPsByProtocol(deniedPod) {
+			cmd := "curl -q -s --connect-timeout 2 --max-time 2 http://" + net.JoinHostPort(deniedIP, strconv.Itoa(port)) + "/hostname"
+			framework.WaitUntil(time.Second, time.Minute, func(_ context.Context) (bool, error) {
+				output, _, err := framework.ExecShellInPod(context.Background(), f, namespaceName, clientPod.Name, cmd)
+				return err == nil && strings.TrimSpace(output) == deniedPodName, nil
+			}, "the unselected pod is reachable before the policy")
+		}
 
 		ginkgo.By("Creating network policy " + netpolName)
 		netpol := &netv1.NetworkPolicy{
@@ -330,11 +337,21 @@ var _ = framework.SerialDescribe("[group:network-policy]", func() {
 				return err == nil && strings.TrimSpace(output) == serverPodName, nil
 			}, "the allowed Service reaches the selected pod")
 			deniedIP := podIPsByProtocol(deniedPod)[protocol]
+			framework.ExpectNotEmpty(deniedIP)
 			deniedCmd := "curl -q -s --connect-timeout 2 --max-time 2 http://" + net.JoinHostPort(deniedIP, strconv.Itoa(port)) + "/hostname"
 			_, _, err = framework.ExecShellInPod(context.Background(), f, namespaceName, clientPod.Name, deniedCmd)
 			framework.ExpectNotNil(err, "the unselected pod must be blocked")
 			mixedIP := serviceClusterIPByProtocol(mixedService, protocol)
+			framework.ExpectNotEmpty(mixedIP)
 			mixedCmd := "curl -q -s --connect-timeout 2 --max-time 2 http://" + net.JoinHostPort(mixedIP, strconv.Itoa(port)) + "/hostname"
+			framework.WaitUntil(time.Second, time.Minute, func(_ context.Context) (bool, error) {
+				output, _, err := framework.ExecShellInPod(context.Background(), f, namespaceName, clientPod.Name, mixedCmd)
+				if err != nil {
+					return false, nil
+				}
+				framework.ExpectEqual(strings.TrimSpace(output), serverPodName, "the mixed Service must not reach the unselected pod")
+				return true, nil
+			}, "the mixed Service reaches the selected pod")
 			for range 10 {
 				output, _, err := framework.ExecShellInPod(context.Background(), f, namespaceName, clientPod.Name, mixedCmd)
 				if err == nil {
