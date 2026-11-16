@@ -76,12 +76,24 @@ jobs:
           version: ${{ env.KIND_VERSION }}
           install_only: true
 
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          check-latest: false
+
+      - name: Build candidate images from this checkout
+        run: make image-fabric
+
       - name: Create kind cluster
         run: |
           sudo pip3 install jinjanator j2cli
           sudo PATH=~/.local/bin:$PATH make kind-init-${{ matrix.ip-family }}
           sudo cp -r /root/.kube/ ~/.kube/
           sudo chown -R $(id -un). ~/.kube/
+
+      - name: Load candidate image into kind
+        run: make kind-load-image
 
       - name: Run chart-testing (install)
         id: install
@@ -93,3 +105,10 @@ jobs:
       - name: Check fabric pod restarts
         if: ${{ success() || (failure() && steps.install.conclusion == 'failure') }}
         run: make check-fabric-pod-restarts
+
+      - name: Diagnose chart installation failure
+        if: failure()
+        run: |
+          kubectl -n kube-system get pods -o wide || true
+          kubectl -n kube-system describe pods || true
+          kubectl -n kube-system get events --sort-by=.lastTimestamp || true
