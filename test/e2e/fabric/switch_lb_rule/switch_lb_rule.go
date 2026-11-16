@@ -455,15 +455,21 @@ var _ = framework.Describe("[group:slr]", func() {
 		framework.ExpectIPInCIDR(secondIP, overlaySubnetCidr)
 		framework.ExpectNotEqual(pods.Items[0].Status.PodIP, secondaryIP)
 
-		vip = framework.RandomIPs(overlaySubnetCidr, "", 1)
+		vips := strings.Split(framework.RandomIPs(overlaySubnetCidr, ";", 2), ";")
+		vip, secondVIP := vips[0], vips[1]
 		v4, v6 := vip, ""
+		secondV4, secondV6 := secondVIP, ""
 		if f.IsIPv6() {
 			v4, v6 = "", vip
+			secondV4, secondV6 = "", secondVIP
 		}
 		vipName := "address-" + suffix
 		vipClient := f.VipClient()
 		vipClient.CreateSync(framework.MakeVip(namespaceName, vipName, subnetName, v4, v6, util.SwitchLBRuleVip))
 		defer vipClient.DeleteSync(vipName)
+		secondVIPName := "address-second-" + suffix
+		vipClient.CreateSync(framework.MakeVip(namespaceName, secondVIPName, subnetName, secondV4, secondV6, util.SwitchLBRuleVip))
+		defer vipClient.DeleteSync(secondVIPName)
 		client := framework.MakePod(namespaceName, clientPodName, nil, podAnnotations, f.FabricImage, []string{"sleep", "infinity"}, nil)
 		client.Spec.NodeName = pods.Items[0].Spec.NodeName
 		_ = podClient.CreateSync(client)
@@ -517,7 +523,7 @@ var _ = framework.Describe("[group:slr]", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: loadBalancerName},
 			Spec: fabricv1.LoadBalancerSpec{
 				Vpc:       vpcName,
-				Frontend:  fabricv1.LoadBalancerFrontend{Vip: vip},
+				Frontend:  fabricv1.LoadBalancerFrontend{Vip: secondVIP},
 				Namespace: namespaceName,
 				Selector:  []string{selectorKey + pods.Items[1].Name},
 				Ports:     []fabricv1.LoadBalancerPort{{Name: "http", Port: epSlrFrontPort, TargetPort: backendPort, Protocol: "TCP"}},
@@ -532,13 +538,14 @@ var _ = framework.Describe("[group:slr]", func() {
 				return false, err
 			}
 			for _, mapping := range strings.Fields(string(output)) {
-				if strings.Contains(mapping, util.JoinHostPort(vip, epSlrFrontPort)) && strings.Contains(mapping, secondBackend) {
+				if strings.Contains(mapping, util.JoinHostPort(secondVIP, epSlrFrontPort)) && strings.Contains(mapping, secondBackend) {
 					return !strings.Contains(mapping, util.JoinHostPort(pods.Items[1].Status.PodIP, backendPort)), nil
 				}
 			}
 			return false, nil
 		}, "the LoadBalancer uses the secondary interface")
-		curlSvc(f, clientPodName, vip, epSlrFrontPort)
+		curlSvc(f, clientPodName, secondVIP, epSlrFrontPort)
+		curlSvc(f, clientPodName, vip, selSlrFrontPort)
 	})
 
 	ginkgo.It("should not delete VIPs in other VPCs when deleting SLR with same VIP IP", func() {
