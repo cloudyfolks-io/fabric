@@ -32,12 +32,15 @@ def pendingExecutor(runs, repository, api):
         ):
             continue
         checks = api(f"commits/{metadata['headSHA']}/check-runs?per_page=100")
-        if any(
-            check["name"] == "x86-e2e / required-gate"
-            and check.get("conclusion") == "action_required"
+        gateChecks = [
+            check for check in checks["check_runs"]
+            if check["name"] == "x86-e2e / required-gate"
+        ]
+        check = max(gateChecks, key=lambda item: item["id"], default={})
+        if (
+            check.get("conclusion") == "action_required"
             and check.get("output", {}).get("summary")
             == "The latest authorized x86 E2E approval is waiting for its trusted executor."
-            for check in checks["check_runs"]
         ):
             return run["id"]
     return None

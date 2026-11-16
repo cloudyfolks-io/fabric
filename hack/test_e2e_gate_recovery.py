@@ -26,6 +26,7 @@ class GateRecoveryTest(unittest.TestCase):
             "base": {"sha": "b" * 40},
         }
         self.check = {
+            "id": 100,
             "name": "x86-e2e / required-gate",
             "conclusion": "action_required",
             "output": {
@@ -82,6 +83,21 @@ class GateRecoveryTest(unittest.TestCase):
         self.check["conclusion"] = "action_required"
         self.check["output"]["summary"] = "Additional deferred-group approval is required."
         self.assertIsNone(self.find())
+
+    def testOlderWaitingCheckDoesNotOverrideNewerResult(self):
+        def api(path):
+            if path == "pulls/39":
+                return self.pullRequest
+            return {
+                "check_runs": [
+                    self.check,
+                    {**self.check, "id": 101, "conclusion": "success"},
+                ]
+            }
+
+        self.assertIsNone(
+            recovery.pendingExecutor([self.run], "cloudyfolks-io/fabric", api)
+        )
 
 
 if __name__ == "__main__":
