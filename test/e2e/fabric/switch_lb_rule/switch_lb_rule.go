@@ -439,6 +439,12 @@ var _ = framework.Describe("[group:slr]", func() {
 		ginkgo.By("Creating statefulset " + stsName + " with a secondary interface in subnet " + subnetName)
 		sts := framework.MakeStatefulSet(stsName, stsSvcName, 2, map[string]string{"app": label}, framework.AgnhostImage)
 		sts.Spec.Template.Annotations = podAnnotations
+		sts.Spec.Template.Spec.Affinity = &corev1.Affinity{PodAntiAffinity: &corev1.PodAntiAffinity{
+			RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{{
+				LabelSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": label}},
+				TopologyKey:   "kubernetes.io/hostname",
+			}},
+		}}
 		sts.Spec.Template.Spec.Containers[0].Command = []string{"/agnhost", "netexec", "--http-port", "80"}
 		_ = stsClient.CreateSync(sts)
 		pods := stsClient.GetPods(sts)
@@ -450,6 +456,17 @@ var _ = framework.Describe("[group:slr]", func() {
 		framework.ExpectNotEqual(pods.Items[0].Status.PodIP, secondaryIP)
 
 		vip = framework.RandomIPs(overlaySubnetCidr, "", 1)
+		v4, v6 := vip, ""
+		if f.IsIPv6() {
+			v4, v6 = "", vip
+		}
+		vipName := "address-" + suffix
+		vipClient := f.VipClient()
+		vipClient.CreateSync(framework.MakeVip(namespaceName, vipName, subnetName, v4, v6, util.SwitchLBRuleVip))
+		defer vipClient.DeleteSync(vipName)
+		client := framework.MakePod(namespaceName, clientPodName, nil, podAnnotations, f.FabricImage, []string{"sleep", "infinity"}, nil)
+		client.Spec.NodeName = pods.Items[0].Spec.NodeName
+		_ = podClient.CreateSync(client)
 		ginkgo.By("Creating selector SwitchLBRule " + selSlrName + " with vip " + vip)
 		slrPorts := []fabricv1.SwitchLBRulePort{{Name: "http", Port: selSlrFrontPort, TargetPort: backendPort, Protocol: "TCP"}}
 		slrAnnotations := map[string]string{
@@ -479,6 +496,7 @@ var _ = framework.Describe("[group:slr]", func() {
 		output, _, err := framework.NBExec(cmd)
 		framework.ExpectNoError(err)
 		framework.ExpectNotContainSubstring(string(output), util.JoinHostPort(pods.Items[0].Status.PodIP, backendPort))
+		curlSvc(f, clientPodName, vip, selSlrFrontPort)
 
 		ginkgo.By("Moving the selector to the second secondary interface")
 		updated := rule.DeepCopy()
@@ -492,6 +510,7 @@ var _ = framework.Describe("[group:slr]", func() {
 			}
 			return strings.Contains(string(output), secondBackend) && !strings.Contains(string(output), wantBackend), nil
 		}, "the selector moves the backend to the second interface")
+		curlSvc(f, clientPodName, vip, selSlrFrontPort)
 
 		ginkgo.By("Creating a LoadBalancer with the same secondary interface selector")
 		lb := &fabricv1.LoadBalancer{
@@ -519,6 +538,7 @@ var _ = framework.Describe("[group:slr]", func() {
 			}
 			return false, nil
 		}, "the LoadBalancer uses the secondary interface")
+		curlSvc(f, clientPodName, vip, epSlrFrontPort)
 	})
 
 	ginkgo.It("should not delete VIPs in other VPCs when deleting SLR with same VIP IP", func() {
