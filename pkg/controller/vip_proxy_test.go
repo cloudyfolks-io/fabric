@@ -11,6 +11,7 @@ import (
 
 	fabricv1 "github.com/cloudyfolks-io/fabric/pkg/apis/fabric/v1"
 	fabriclisters "github.com/cloudyfolks-io/fabric/pkg/client/listers/fabric/v1"
+	"github.com/cloudyfolks-io/fabric/pkg/ovsdb/ovnnb"
 	"github.com/cloudyfolks-io/fabric/pkg/util"
 )
 
@@ -73,7 +74,9 @@ func TestSwitchLBVipProxyPrecedesStalePortRemoval(t *testing.T) {
 			indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
 			require.NoError(t, indexer.Add(other))
 			fc.fakeController.virtualIpsLister = fabriclisters.NewVipLister(indexer)
-			proxy := fc.mockOvnClient.EXPECT().SetLogicalSwitchPortArpProxyIPs("tenant-vpc", []string{"10.0.0.10", "10.0.0.11"})
+			fc.mockOvnClient.EXPECT().GetLogicalRouterPort("vpc-tenant", false).Return(
+				&ovnnb.LogicalRouterPort{MAC: "02:00:00:00:00:01"}, nil)
+			proxy := fc.mockOvnClient.EXPECT().SetLogicalSwitchPortArpProxyIPs("tenant-vpc", "02:00:00:00:00:01", []string{"10.0.0.10", "10.0.0.11"})
 			if proxyFails {
 				proxy.Return(errors.New("database unavailable"))
 				require.Error(t, fc.fakeController.reconcileSwitchLBVipPort(vip))

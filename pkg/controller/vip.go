@@ -306,7 +306,7 @@ func (c *Controller) reconcileSwitchLBVipPort(vip *fabricv1.Vip, extraIPs ...str
 
 func (c *Controller) syncSwitchLBVipArpProxy(subnetName string, extraIPs ...string) error {
 	c.subnetKeyMutex.LockKey(subnetName)
-	defer c.subnetKeyMutex.UnlockKey(subnetName)
+	defer func() { _ = c.subnetKeyMutex.UnlockKey(subnetName) }()
 	subnet, err := c.subnetsLister.Get(subnetName)
 	if k8serrors.IsNotFound(err) {
 		return nil
@@ -324,13 +324,24 @@ func (c *Controller) syncSwitchLBVipArpProxy(subnetName string, extraIPs ...stri
 	}
 	ips := switchLBVipProxyIPs(vips, subnetName, extraIPs...)
 	lspName := fmt.Sprintf("%s-%s", subnetName, vpc.Status.Router)
+	mac := ""
 	if len(ips) == 0 {
 		exists, err := c.OVNNbClient.LogicalSwitchPortExists(lspName)
 		if err != nil || !exists {
 			return err
 		}
+	} else {
+		lrpName := fmt.Sprintf("%s-%s", vpc.Status.Router, subnetName)
+		lrp, err := c.OVNNbClient.GetLogicalRouterPort(lrpName, false)
+		if err != nil {
+			return err
+		}
+		if lrp == nil || lrp.MAC == "" {
+			return fmt.Errorf("logical router port %s must have a MAC for VIP proxy", lrpName)
+		}
+		mac = lrp.MAC
 	}
-	return c.OVNNbClient.SetLogicalSwitchPortArpProxyIPs(lspName, ips)
+	return c.OVNNbClient.SetLogicalSwitchPortArpProxyIPs(lspName, mac, ips)
 }
 
 func (c *Controller) handleUpdateVirtualParents(key string) error {

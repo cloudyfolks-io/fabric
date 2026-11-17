@@ -612,12 +612,16 @@ func (suite *OvnClientTestSuite) testSetLogicalSwitchPortArpProxy() {
 	})
 
 	t.Run("router proxy address list and removal", func(t *testing.T) {
-		err := nbClient.SetLogicalSwitchPortArpProxyIPs(lspName, []string{"10.244.0.37", "fc00::af4:25"})
+		// The second IPv6 address triggers OVN's ambiguous MAC-first parser
+		// without the explicit MAC prefix.
+		proxyIPs := []string{"10.244.0.37", "fc00::af4:25", "fc00:10:ff:0:1:4739:51f0:d0e"}
+		err := nbClient.SetLogicalSwitchPortArpProxyIPs(lspName, mac, proxyIPs)
 		require.NoError(t, err)
 		lsp, err := nbClient.GetLogicalSwitchPort(lspName, false)
 		require.NoError(t, err)
-		require.Equal(t, "10.244.0.37 fc00::af4:25", lsp.Options["arp_proxy"])
-		require.NoError(t, nbClient.SetLogicalSwitchPortArpProxyIPs(lspName, nil))
+		require.Equal(t, mac+" 10.244.0.37 fc00::af4:25 fc00:10:ff:0:1:4739:51f0:d0e", lsp.Options["arp_proxy"])
+		require.Error(t, nbClient.SetLogicalSwitchPortArpProxyIPs(lspName, "", proxyIPs))
+		require.NoError(t, nbClient.SetLogicalSwitchPortArpProxyIPs(lspName, "", nil))
 		lsp, err = nbClient.GetLogicalSwitchPort(lspName, false)
 		require.NoError(t, err)
 		require.NotContains(t, lsp.Options, "arp_proxy")

@@ -117,7 +117,7 @@ type LogicalSwitchPort interface {
 	SetLogicalSwitchPortSecurity(portSecurity bool, lspName, mac, ips, vips string) error
 	SetLogicalSwitchPortVirtualParents(lsName, parents string, ips ...string) error
 	SetLogicalSwitchPortArpProxy(lspName string, enableArpProxy bool) error
-	SetLogicalSwitchPortArpProxyIPs(lspName string, ips []string) error
+	SetLogicalSwitchPortArpProxyIPs(lspName, mac string, ips []string) error
 	SetLogicalSwitchPortNatAddresses(lspName, natAddresses string) error
 	SetLogicalSwitchPortExternalIDs(lspName string, externalIDs map[string]string) error
 	SetLogicalSwitchPortVlanTag(lspName string, vlanID int) error

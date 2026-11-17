@@ -489,6 +489,17 @@ var _ = framework.Describe("[group:slr]", func() {
 			framework.ExpectNoError(err)
 			framework.ExpectEqual(strings.TrimSpace(string(output)), "")
 		}
+		ginkgo.By("Advertising both VIPs with an unambiguous router MAC prefix")
+		routerMAC, _, err := framework.NBExec(fmt.Sprintf("ovn-nbctl get logical_router_port %s-%s mac", vpcName, subnetName))
+		framework.ExpectNoError(err)
+		mac := strings.Trim(strings.TrimSpace(string(routerMAC)), "\"")
+		framework.ExpectNotEmpty(mac)
+		proxy, _, err := framework.NBExec(fmt.Sprintf("ovn-nbctl get logical_switch_port %s-%s options:arp_proxy", subnetName, vpcName))
+		framework.ExpectNoError(err)
+		proxyValue := strings.Trim(strings.TrimSpace(string(proxy)), "\"")
+		framework.ExpectTrue(strings.HasPrefix(proxyValue, mac+" "))
+		framework.ExpectContainSubstring(proxyValue, vip)
+		framework.ExpectContainSubstring(proxyValue, secondVIP)
 		failureDiagnostics = func() {
 			// Capture datapath evidence before the suite tears the fixture down.
 			// These commands are diagnostic only; never turn a failed assertion
