@@ -8,7 +8,7 @@ executed SelectionPlan comparison remain authoritative.
 Known feature controller paths select their affected suites plus IPv4
 overlay/underlay smoke. Shared and unclassified production paths still select
 all 72 entries. Recommended feature groups still require the existing approval.
-Use `/test e2e full` for final release qualification against the current candidate.
+Use `/test e2e-all` for final release qualification against the current candidate.
 Selected PR coverage is never equivalent to a full release pass.
 
 The existing nightly retains IPv4, IPv6, dual-stack and extra suites (including
