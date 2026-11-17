@@ -775,7 +775,8 @@ class E2EControlTest(unittest.TestCase):
         )
         self.assertIn("--force-full-reason \"$FORCE_FULL_REASON\"", workflow)
         self.assertIn("expectedCount >= 3000", workflow)
-        self.assertIn("e2eSelector.expandWorkflow(workflow)", workflow)
+        self.assertIn('executionPlan = {"matrix": []}', workflow)
+        self.assertIn('in ("workflow_dispatch", "schedule")', workflow)
         resultBlock = blocks["e2e-executor-result"]
         self.assertIn("permissions: {}", resultBlock)
         self.assertIn("selected x86 E2E Jobs did not succeed", resultBlock)
@@ -785,7 +786,8 @@ class E2EControlTest(unittest.TestCase):
                 block = blocks[jobId]
                 self.assertRegex(block, r"(?m)^    needs:(?:\n      - .+)+\n")
                 self.assertIn("e2e-selection", block)
-                self.assertIn("github.event_name != 'workflow_dispatch'", block)
+                self.assertNotIn("github.event_name != 'workflow_dispatch' || contains", block)
+                self.assertIn("needs.e2e-selection.outputs.executionJobIds", block)
                 self.assertIn("inputs.headSHA || github.sha", block)
                 self.assertIn("persist-credentials: false", block)
 

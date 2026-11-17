@@ -31,7 +31,8 @@
     "hack/modelgen.sh",
     "pkg/apis/**",
     "pkg/client/**",
-    "pkg/controller/**",
+    "pkg/controller/pki*.go",
+    "pkg/controller/signer*.go",
     "pkg/informer/**",
     "pkg/daemon/**",
     "pkg/ipam/**",
@@ -99,7 +100,7 @@
       "reason": "service, load balancer, and underlay suites"
     },
     {
-      "patterns": ["pkg/controller/service.go", "pkg/controller/switch_lb_rule.go"],
+      "patterns": ["pkg/controller/service.go", "pkg/controller/service_test.go", "pkg/controller/switch_lb_rule.go", "pkg/controller/switch_lb_rule_test.go"],
       "groups": ["service-lb-underlay"],
       "owner": "networking-e2e",
       "reason": "service and load balancer reconciliation"

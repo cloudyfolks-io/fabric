@@ -72,6 +72,9 @@ GINKGO_PARALLEL_OPT = --procs $$(($$(nproc) * $(GINKGO_PARALLEL_MULTIPLIER)))
 endif
 
 GINKGO_E2E_BUILD = $(GINKGO) build $(E2E_BUILD_FLAGS)
+ifneq ($(wildcard .e2e-prebuilt),)
+GINKGO_E2E_BUILD = bash hack/e2e-prebuilt.sh
+endif
 GINKGO_E2E_RUN = $(GINKGO) run $(GINKGO_OUTPUT_OPT) --randomize-all -v
 GINKGO_E2E_RUN_PARALLEL = $(GINKGO_E2E_RUN) $(GINKGO_PARALLEL_OPT)
 
@@ -104,6 +107,7 @@ e2e-build:
 	$(GINKGO_E2E_BUILD) ./test/e2e/cnp-domain
 	$(GINKGO_E2E_BUILD) ./test/e2e/single-replica
 	$(GINKGO_E2E_BUILD) ./test/e2e/kamaji
+	$(GINKGO_E2E_BUILD) ./test/e2e/ipsec
 
 .PHONY: k8s-conformance-e2e
 k8s-conformance-e2e:
