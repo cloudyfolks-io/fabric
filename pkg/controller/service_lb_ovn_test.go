@@ -443,16 +443,19 @@ func TestNativeReleasePreservesClusterRouterLoadBalancers(t *testing.T) {
 	// No OVN mutation is expected, even when the last native Service is gone.
 	// These attachments also serve legacy kube-vip and ordinary Services.
 	require.NoError(t, fc.fakeController.detachVpcLBsFromRouterIfUnused(
-		fc.fakeController.config.ClusterRouter, "sniproxy/sniproxy-services", lbs))
+		fc.fakeController.config.ClusterRouter, "sniproxy/sniproxy-services", lbs,
+	))
 }
 
 func TestNativeReleaseDetachesUnusedCustomRouterLoadBalancers(t *testing.T) {
 	fc := newFakeController(t)
 	fc.fakeController.config.EnableOvnLbSvc = true
 	fc.mockOvnClient.EXPECT().LogicalRouterUpdateLoadBalancers(
-		"custom-vpc", ovsdb.MutateOperationDelete, "custom-tcp-lb").Return(nil)
+		"custom-vpc", ovsdb.MutateOperationDelete, "custom-tcp-lb",
+	).Return(nil)
 	require.NoError(t, fc.fakeController.detachVpcLBsFromRouterIfUnused(
-		"custom-vpc", "ns/native", set.New("custom-tcp-lb")))
+		"custom-vpc", "ns/native", set.New("custom-tcp-lb"),
+	))
 }
 
 func TestUpdateLoadBalancerPoolUsageSetsReady(t *testing.T) {
