@@ -848,12 +848,13 @@ jobs:
           printf '%s\n' "$sha" > .e2e-prebuilt
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           sha256sum test/e2e/kamaji/kamaji.test > .e2e-binaries.sha256
-          tar -cf "$RUNNER_TEMP/hosted-binaries.tar" .e2e-prebuilt .e2e-binaries.sha256 test/e2e/kamaji/kamaji.test
+          mkdir -p "$RUNNER_TEMP/hosted-binaries"
+          tar -cf "$RUNNER_TEMP/hosted-binaries/binaries.tar" .e2e-prebuilt .e2e-binaries.sha256 test/e2e/kamaji/kamaji.test
 
       - uses: actions/upload-artifact@v7
         with:
           name: e2e-hosted-binaries-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/hosted-binaries.tar
+          path: ${{ runner.temp }}/hosted-binaries/binaries.tar
           compression-level: 0
           retention-days: 3
 
