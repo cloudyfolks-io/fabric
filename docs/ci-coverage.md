@@ -20,3 +20,9 @@ artifact, preserving executable permissions. A source SHA and SHA256 manifest
 are checked before reuse; missing/tampered/stale binaries fail rather than
 silently rebuilding. Artifacts are never fetched from other runs or caches.
 Go caches remain an optimization, not evidence that a binary exists.
+
+Base-source suites share one archive. Hosted OVN keeps its candidate-source
+checkout and shares a separate candidate-bound Kamaji binary across its six
+variants. Both archives are built in the same producer run, with distinct SHA
+outputs; substituting one for the other is rejected, even if only release
+metadata differs between those commits.

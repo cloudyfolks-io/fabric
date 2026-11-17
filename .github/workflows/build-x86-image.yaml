@@ -742,6 +742,7 @@ jobs:
     timeout-minutes: 30
     outputs:
       sourceSHA: ${{ steps.source.outputs.sha }}
+      hostedSourceSHA: ${{ steps.hosted-source.outputs.sha }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -825,6 +826,34 @@ jobs:
         with:
           name: e2e-binaries-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/binaries.tar
+          compression-level: 0
+          retention-days: 3
+
+      # Hosted OVN runs from the candidate checkout, unlike the base-source
+      # suites above. Keep its original source coverage and immutable binding.
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: false
+
+      - name: Package candidate-bound Hosted OVN binary
+        id: hosted-source
+        run: |
+          set -euo pipefail
+          sha=$(git rev-parse HEAD)
+          if [ "$(cat .e2e-prebuilt 2>/dev/null || true)" != "$sha" ] || [ ! -x test/e2e/kamaji/kamaji.test ]; then
+            go test -c -ldflags "-w -s" -o test/e2e/kamaji/kamaji.test ./test/e2e/kamaji
+          fi
+          printf '%s\n' "$sha" > .e2e-prebuilt
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          sha256sum test/e2e/kamaji/kamaji.test > .e2e-binaries.sha256
+          tar -cf "$RUNNER_TEMP/hosted-binaries.tar" .e2e-prebuilt .e2e-binaries.sha256 test/e2e/kamaji/kamaji.test
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: e2e-hosted-binaries-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/hosted-binaries.tar
           compression-level: 0
           retention-days: 3
 
@@ -2123,7 +2152,11 @@ jobs:
       - name: Export Go full version
         run: echo "GO_VERSION=${{ steps.setup-go.outputs.go-version }}" >> "$GITHUB_ENV"
 
-      - *restore-e2e-binaries
+      - uses: ./.github/actions/e2e-binaries
+        with:
+          source-sha: ${{ needs.build-e2e-binaries.outputs.hostedSourceSHA }}
+          artifact-name: e2e-hosted-binaries-${{ github.run_id }}-${{ github.run_attempt }}
+          directory: "."
       - name: Go cache
         uses: actions/cache/restore@v6
         with:

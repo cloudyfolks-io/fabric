@@ -7,12 +7,15 @@ inputs:
   directory:
     default: "."
     description: Checked out E2E source directory
+  artifact-name:
+    default: ""
+    description: Same-run artifact for this exact source tree
 runs:
   using: composite
   steps:
     - uses: actions/download-artifact@v8
       with:
-        name: e2e-binaries-${{ github.run_id }}-${{ github.run_attempt }}
+        name: ${{ inputs.artifact-name || format('e2e-binaries-{0}-{1}', github.run_id, github.run_attempt) }}
         path: ${{ runner.temp }}/e2e-binaries
     - shell: bash
       env:
