@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-	"strconv"
 	"strings"
 
 	"github.com/ovn-kubernetes/libovsdb/client"
@@ -371,6 +370,19 @@ func (c *OVNNbClient) SetVirtualLogicalSwitchPortVirtualParents(lspName, parents
 }
 
 func (c *OVNNbClient) SetLogicalSwitchPortArpProxy(lspName string, enableArpProxy bool) error {
+	value := ""
+	if enableArpProxy {
+		value = "true"
+	}
+	return c.setLogicalSwitchPortArpProxy(lspName, value)
+}
+
+// Router ports accept an address list, not the boolean VIF-port proxy option.
+func (c *OVNNbClient) SetLogicalSwitchPortArpProxyIPs(lspName string, ips []string) error {
+	return c.setLogicalSwitchPortArpProxy(lspName, strings.Join(ips, " "))
+}
+
+func (c *OVNNbClient) setLogicalSwitchPortArpProxy(lspName, value string) error {
 	lsp, err := c.GetLogicalSwitchPort(lspName, false)
 	if err != nil {
 		klog.Error(err)
@@ -381,11 +393,15 @@ func (c *OVNNbClient) SetLogicalSwitchPortArpProxy(lspName string, enableArpProx
 		klog.Error(err)
 		return err
 	}
+	if lsp.Options["arp_proxy"] == value {
+		return nil
+	}
+	lsp.Options = maps.Clone(lsp.Options)
 	if lsp.Options == nil {
 		lsp.Options = make(map[string]string)
 	}
-	lsp.Options["arp_proxy"] = strconv.FormatBool(enableArpProxy)
-	if !enableArpProxy {
+	lsp.Options["arp_proxy"] = value
+	if value == "" {
 		delete(lsp.Options, "arp_proxy")
 	}
 

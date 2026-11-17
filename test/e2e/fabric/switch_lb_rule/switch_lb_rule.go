@@ -73,6 +73,8 @@ var _ = framework.Describe("[group:slr]", func() {
 		loadBalancerName                          string
 		loadBalancerCreated                       bool
 		overlaySubnetCidr, vip                    string
+		failureDiagnostics                        func()
+		secondaryVIPNames                         []string
 
 		frontPort, selSlrFrontPort, epSlrFrontPort, backendPort int32
 	)
@@ -100,6 +102,8 @@ var _ = framework.Describe("[group:slr]", func() {
 		nadName = subnetName
 		loadBalancerName = "test-" + suffix
 		loadBalancerCreated = false
+		failureDiagnostics = nil
+		secondaryVIPNames = nil
 		vpcName = generateVpcName(suffix)
 		frontPort = 8090
 		selSlrFrontPort = 8091
@@ -112,7 +116,16 @@ var _ = framework.Describe("[group:slr]", func() {
 		_ = vpcClient.CreateSync(vpc)
 	})
 
+	ginkgo.JustAfterEach(func() {
+		if ginkgo.CurrentSpecReport().Failed() && failureDiagnostics != nil {
+			failureDiagnostics()
+		}
+	})
+
 	ginkgo.AfterEach(func() {
+		for _, name := range secondaryVIPNames {
+			f.VipClient().DeleteSync(name)
+		}
 		if loadBalancerCreated {
 			ginkgo.By("Deleting load balancer " + loadBalancerName)
 			err := f.FabricClientSet.FabricV1().LoadBalancers().Delete(context.Background(), loadBalancerName, metav1.DeleteOptions{})
@@ -465,19 +478,24 @@ var _ = framework.Describe("[group:slr]", func() {
 		}
 		vipName := "address-" + suffix
 		vipClient := f.VipClient()
+		secondaryVIPNames = append(secondaryVIPNames, vipName)
 		vipClient.CreateSync(framework.MakeVip(namespaceName, vipName, subnetName, v4, v6, util.SwitchLBRuleVip))
-		defer vipClient.DeleteSync(vipName)
 		secondVIPName := "address-second-" + suffix
+		secondaryVIPNames = append(secondaryVIPNames, secondVIPName)
 		vipClient.CreateSync(framework.MakeVip(namespaceName, secondVIPName, subnetName, secondV4, secondV6, util.SwitchLBRuleVip))
-		defer vipClient.DeleteSync(secondVIPName)
-		ginkgo.DeferCleanup(func() {
-			if !ginkgo.CurrentSpecReport().Failed() {
-				return
-			}
+		ginkgo.By("Keeping the gateway MAC owned only by the router port")
+		for _, name := range []string{vipName, secondVIPName} {
+			output, _, err := framework.NBExec(fmt.Sprintf("ovn-nbctl --if-exists get logical_switch_port %s.%s addresses", name, namespaceName))
+			framework.ExpectNoError(err)
+			framework.ExpectEqual(strings.TrimSpace(string(output)), "")
+		}
+		failureDiagnostics = func() {
 			// Capture datapath evidence before the suite tears the fixture down.
 			// These commands are diagnostic only; never turn a failed assertion
 			// into a pass or hide the original failure.
 			for _, pod := range []string{clientPodName, pods.Items[0].Name, pods.Items[1].Name} {
+				current, err := f.ClientSet.CoreV1().Pods(namespaceName).Get(context.Background(), pod, metav1.GetOptions{})
+				fmt.Fprintf(ginkgo.GinkgoWriter, "diagnostic pod=%s object=%+v error=%v\n", pod, current, err)
 				for _, command := range []string{"ip -br address", "ip route show table all", "ip -6 route show table all", "ip neigh show", "ip -6 neigh show"} {
 					output, err := e2epodoutput.RunHostCmd(namespaceName, pod, command)
 					fmt.Fprintf(ginkgo.GinkgoWriter, "diagnostic pod=%s command=%q output=%q error=%v\n", pod, command, output, err)
@@ -493,7 +511,7 @@ var _ = framework.Describe("[group:slr]", func() {
 			}
 			output, stderr, err := framework.NBExec("ovn-nbctl show")
 			fmt.Fprintf(ginkgo.GinkgoWriter, "diagnostic ovn-nbctl show: stdout=%s stderr=%s error=%v\n", output, stderr, err)
-		})
+		}
 		client := framework.MakePod(namespaceName, clientPodName, nil, podAnnotations, f.FabricImage, []string{"sleep", "infinity"}, nil)
 		client.Spec.NodeName = pods.Items[0].Spec.NodeName
 		_ = podClient.CreateSync(client)

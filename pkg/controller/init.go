@@ -496,7 +496,8 @@ func (c *Controller) InitIPAM() error {
 			continue
 		}
 		portName := ovs.PodNameToPortName(vip.Name, vip.Spec.Namespace, provider)
-		if _, _, _, err = c.ipam.GetStaticAddress(vip.Name, portName, vip.Status.V4ip, &vip.Status.Mac, vip.Spec.Subnet, true); err != nil {
+		ips, mac := vipIPAMAllocation(vip)
+		if _, _, _, err = c.ipam.GetStaticAddress(vip.Name, portName, ips, &mac, vip.Spec.Subnet, true); err != nil {
 			klog.Errorf("failed to init ipam from vip cr %s: %v", vip.Name, err)
 		}
 	}
