@@ -68,6 +68,7 @@ ADD patches/737d9f932edada5a91f315b5f382daada8dee952.patch $SRC_DIR
 ADD patches/52b727b3315463668669ff423ce8bfa129861162.patch $SRC_DIR
 ADD patches/sbrec-delete-null-check.patch $SRC_DIR
 ADD patches/pinctrl-adapt-ovs-compose-nd-ns.patch $SRC_DIR
+ADD patches/physical-refresh-localnet-on-gateway-move.patch $SRC_DIR
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
@@ -143,6 +144,8 @@ RUN cd /usr/src/ && git clone -b branch-25.03 --depth=1 https://github.com/ovn-o
     git apply $SRC_DIR/sbrec-delete-null-check.patch && \
     # adapt to the compose_nd_ns() signature change in ovs branch-3.5 commit 33825c273
     git apply $SRC_DIR/pinctrl-adapt-ovs-compose-nd-ns.patch && \
+    # refresh localnet chassis-MAC rewrites when a distributed gateway moves
+    git apply $SRC_DIR/physical-refresh-localnet-on-gateway-move.patch && \
     ovn_commit=$(git rev-parse --short=12 HEAD) && \
     sed -i -E "s/^(AC_INIT\(\[?ovn\]?, \[?[^],)]+)(\]?)(,.*)$/\1+g${ovn_commit}\2\3/" configure.ac
 
@@ -169,6 +172,12 @@ RUN cd /usr/src/ovn && \
     CONFIGURE_OPTS='--with-ovs-build=/usr/src/ovs/_debian CFLAGS="-fPIC"' && \
     if [ "$ARCH" = "amd64" ] && [ "$LEGACY" != "true" ]; then CONFIGURE_OPTS="--with-ovs-build=/usr/src/ovs/_debian CFLAGS='-O2 -g -msse4.2 -mpopcnt -fPIC'"; fi && \
     OVSDIR=/usr/src/ovs EXTRA_CONFIGURE_OPTS=$CONFIGURE_OPTS DEB_BUILD_OPTIONS='parallel=8 nocheck' fakeroot debian/rules binary
+
+# Run the gateway-movement regression against the exact patched OVS/OVN build.
+# A Go-controller E2E pass alone cannot detect stale OVN physical flow rules.
+RUN cd /usr/src/ovn && \
+    (make check TESTSUITEFLAGS="-k 'gateway move refreshes chassis MAC rewrite'" || \
+     { cat tests/testsuite.log; exit 1; })
 
 RUN mkdir -p /usr/src/openbfdd && \
     curl -sSf -L --retry 5 https://github.com/dyninc/OpenBFDD/archive/e35f43ad8d2b3f084e96a84c392528a90d05a287.tar.gz | \

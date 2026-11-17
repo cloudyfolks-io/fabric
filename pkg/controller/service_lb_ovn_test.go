@@ -5,12 +5,14 @@ import (
 	"math/big"
 	"testing"
 
+	"github.com/ovn-kubernetes/libovsdb/ovsdb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/set"
 
 	fabricv1 "github.com/cloudyfolks-io/fabric/pkg/apis/fabric/v1"
 	"github.com/cloudyfolks-io/fabric/pkg/internal"
@@ -431,6 +433,26 @@ func TestLoadBalancerPoolReadiness(t *testing.T) {
 	status, reason, _ = loadBalancerPoolReadiness(true, 5)
 	assert.Equal(t, corev1.ConditionTrue, status)
 	assert.Equal(t, reasonOvnLbSvcPoolReady, reason)
+}
+
+func TestNativeReleasePreservesClusterRouterLoadBalancers(t *testing.T) {
+	fc := newFakeController(t)
+	lbs := set.New("cluster-tcp-loadbalancer", "cluster-udp-loadbalancer",
+		"cluster-sctp-loadbalancer", "cluster-tcp-session-loadbalancer",
+		"cluster-udp-session-loadbalancer", "cluster-sctp-session-loadbalancer")
+	// No OVN mutation is expected, even when the last native Service is gone.
+	// These attachments also serve legacy kube-vip and ordinary Services.
+	require.NoError(t, fc.fakeController.detachVpcLBsFromRouterIfUnused(
+		fc.fakeController.config.ClusterRouter, "sniproxy/sniproxy-services", lbs))
+}
+
+func TestNativeReleaseDetachesUnusedCustomRouterLoadBalancers(t *testing.T) {
+	fc := newFakeController(t)
+	fc.fakeController.config.EnableOvnLbSvc = true
+	fc.mockOvnClient.EXPECT().LogicalRouterUpdateLoadBalancers(
+		"custom-vpc", ovsdb.MutateOperationDelete, "custom-tcp-lb").Return(nil)
+	require.NoError(t, fc.fakeController.detachVpcLBsFromRouterIfUnused(
+		"custom-vpc", "ns/native", set.New("custom-tcp-lb")))
 }
 
 func TestUpdateLoadBalancerPoolUsageSetsReady(t *testing.T) {

@@ -863,6 +863,12 @@ func (c *Controller) releaseOvnLbSvc(rel *ovnLbSvcRelease) error {
 }
 
 func (c *Controller) detachVpcLBsFromRouterIfUnused(vpcName, excludeKey string, vpcLBNames set.Set[string]) error {
+	// The cluster router's LBs are shared with ordinary Kubernetes Services,
+	// including legacy externally announced VIPs. Releasing the last native
+	// Service does not release those router attachments.
+	if vpcName == c.config.ClusterRouter {
+		return nil
+	}
 	if vpcLBNames == nil || vpcLBNames.Len() == 0 || c.hasOvnLbSvcInVpc(vpcName, excludeKey) {
 		return nil
 	}

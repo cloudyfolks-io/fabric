@@ -1,0 +1,133 @@
+Subject: [PATCH] physical: refresh localnet MAC rewrites on CR moves
+
+Localnet source-MAC rewrites depend on peer chassisredirect residency.
+Reconsider that localnet port on CR updates, without a full recompute.
+
+Regression: initial gateway placement is correct; move and restore must
+transfer the priority-150 rewrite between chassis. Unpatched 25.03.4
+retains the original rewrites after both the SB binding and HV sync.
+
+diff --git a/controller/physical.c b/controller/physical.c
+index bcd4b0d..6db9ae1 100644
+--- a/controller/physical.c
++++ b/controller/physical.c
+@@ -2516,6 +2516,33 @@ physical_handle_flows_for_lport(const struct sbrec_port_binding *pb,
+         get_local_datapath(p_ctx->local_datapaths,
+                            pb->datapath->tunnel_key);
+ 
++    if (type == LP_CHASSISREDIRECT) {
++        /* The peer switch's localnet MAC-rewrite flows depend on this
++         * port's residency.  Re-evaluate them when the gateway moves,
++         * otherwise the new active gateway keeps replacing the router
++         * MAC with its chassis MAC and the old gateway does not. */
++        const char *distributed_port = smap_get(&pb->options,
++                                               "distributed-port");
++        const struct sbrec_port_binding *distributed_pb = distributed_port
++            ? lport_lookup_by_name(p_ctx->sbrec_port_binding_by_name,
++                                   distributed_port)
++            : NULL;
++        const struct sbrec_port_binding *peer = distributed_pb
++            ? get_binding_peer(p_ctx->sbrec_port_binding_by_name,
++                               distributed_pb, get_lport_type(distributed_pb))
++            : NULL;
++        struct local_datapath *peer_ldp = peer
++            ? get_local_datapath(p_ctx->local_datapaths,
++                                 peer->datapath->tunnel_key)
++            : NULL;
++        if (peer_ldp && peer_ldp->localnet_port) {
++            const struct sbrec_port_binding *localnet = peer_ldp->localnet_port;
++            ofctrl_remove_flows(flow_table, &localnet->header_.uuid);
++            physical_eval_port_binding(p_ctx, localnet, LP_LOCALNET,
++                                       flow_table);
++        }
++    }
++
+     if (type == LP_EXTERNAL || type == LP_PATCH || type == LP_L3GATEWAY) {
+         /* Those lports have a dependency on the localnet port.
+          * We need to remove the flows of the localnet port as well
+diff --git a/tests/ovn-controller.at b/tests/ovn-controller.at
+index 52a8331..5191a45 100644
+--- a/tests/ovn-controller.at
++++ b/tests/ovn-controller.at
+@@ -2612,6 +2612,81 @@ OVN_CLEANUP([hv1
+ ])
+ AT_CLEANUP
+ 
++AT_SETUP([ovn-controller - gateway move refreshes chassis MAC rewrite])
++
++ovn_start
++net_add n1
++for i in 1 2; do
++    sim_add hv$i
++    as hv$i
++    check ovs-vsctl add-br br-phys
++    check ovs-vsctl set open . \
++        external-ids:ovn-bridge-mappings=phys:br-phys \
++        external-ids:ovn-chassis-mac-mappings="phys:aa:bb:cc:dd:ee:0$i"
++    ovn_attach n1 br-phys 192.168.0.$i 24
++done
++
++check ovn-nbctl lr-add r1
++check ovn-nbctl ls-add inside
++check ovn-nbctl lrp-add r1 r1-inside 00:00:00:00:01:01 10.0.0.1/24
++check ovn-nbctl lsp-add inside inside-r1 -- \
++    lsp-set-type inside-r1 router -- \
++    lsp-set-addresses inside-r1 router -- \
++    lsp-set-options inside-r1 router-port=r1-inside
++for i in 1 2; do
++    check ovn-nbctl lsp-add inside p$i -- \
++        lsp-set-addresses p$i "00:00:00:00:00:0$i 10.0.0.$((i + 1))"
++    as hv$i check ovs-vsctl add-port br-int vif$i -- \
++        set Interface vif$i external-ids:iface-id=p$i
++done
++
++check ovn-nbctl ls-add outside
++check ovn-nbctl lsp-add-localnet-port outside ln-outside phys
++check ovn-nbctl lrp-add r1 r1-outside 00:00:00:00:02:01 192.0.2.1/24
++check ovn-nbctl lsp-add outside outside-r1 -- \
++    lsp-set-type outside-r1 router -- \
++    lsp-set-addresses outside-r1 router -- \
++    lsp-set-options outside-r1 router-port=r1-outside nat-addresses=router
++check ovn-nbctl lrp-set-gateway-chassis r1-outside hv1 100 -- \
++    lrp-set-gateway-chassis r1-outside hv2 90
++check ovn-nbctl --wait=hv sync
++
++rewrite_count() {
++    as "$1" ovs-ofctl dump-flows br-int \
++        table=65,dl_src=00:00:00:00:02:01 | grep -c 'priority=150' || :
++}
++
++check_rewrites() {
++    AT_CHECK_UNQUOTED([rewrite_count hv1], [0], [$1
++])
++    AT_CHECK_UNQUOTED([rewrite_count hv2], [0], [$2
++])
++}
++
++OVS_WAIT_UNTIL([test "$(ovn-sbctl --bare --columns=chassis find \
++    Port_Binding logical_port=cr-r1-outside)" = \
++    "$(ovn-sbctl --bare --columns=_uuid find Chassis name=hv1)"])
++check_rewrites 0 1
++
++# Only CR residency changes. No localnet or chassis configuration update
++# should be needed to remove the rewrite on the new active gateway.
++check ovn-nbctl --wait=hv lrp-set-gateway-chassis r1-outside hv2 110
++OVS_WAIT_UNTIL([test "$(ovn-sbctl --bare --columns=chassis find \
++    Port_Binding logical_port=cr-r1-outside)" = \
++    "$(ovn-sbctl --bare --columns=_uuid find Chassis name=hv2)"])
++check ovn-nbctl --wait=hv sync
++check_rewrites 1 0
++
++check ovn-nbctl --wait=hv lrp-set-gateway-chassis r1-outside hv2 90
++OVS_WAIT_UNTIL([test "$(ovn-sbctl --bare --columns=chassis find \
++    Port_Binding logical_port=cr-r1-outside)" = \
++    "$(ovn-sbctl --bare --columns=_uuid find Chassis name=hv1)"])
++check ovn-nbctl --wait=hv sync
++check_rewrites 0 1
++
++OVN_CLEANUP([hv1], [hv2])
++AT_CLEANUP
++
+ AT_SETUP([ovn-controller - localport can be recreated])
+ 
+ ovn_start
