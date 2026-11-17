@@ -109,7 +109,6 @@ jobs:
   e2e-selection:
     name: x86 E2E Selection
     if: github.event_name != 'workflow_dispatch' || github.actor == 'github-actions[bot]'
-    continue-on-error: ${{ github.event_name != 'workflow_dispatch' }}
     runs-on: ubuntu-24.04
     env:
       GH_TOKEN: ${{ github.event_name == 'workflow_dispatch' && github.token || '' }}
@@ -338,7 +337,7 @@ jobs:
           PY
 
       - name: Validate the E2E control modules
-        run: python3 -m unittest hack/test_e2e_selector.py hack/test_e2e_control.py
+        run: python3 -m unittest hack/test_e2e_selector.py hack/test_e2e_control.py hack/test_e2e_fast_path.py
 
       - name: Upload the selection plan
         if: always()
