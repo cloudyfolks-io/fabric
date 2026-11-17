@@ -84,11 +84,16 @@ on:
         required: true
         type: string
 
+  # Full, deterministic weekly memory checks. The nightly retains extra suites.
+  schedule:
+    - cron: "0 6 * * 0"
+
 concurrency:
   group: ${{ github.event_name == 'workflow_dispatch' && format('{0}-{1}', github.workflow, inputs.requestKey) || format('{0}-{1}', github.workflow, github.ref) }}
   cancel-in-progress: true
 
 env:
+  CI_MEMORY_CHECK: ${{ github.event_name == 'schedule' }}
   # renovate: datasource=github-releases depName=kind packageName=kubernetes-sigs/kind
   KIND_VERSION: v0.32.0
   # renovate: datasource=github-releases depName=golangci-lint packageName=golangci/golangci-lint
@@ -310,19 +315,19 @@ jobs:
           import e2e_selector as e2eSelector
 
           plan = json.loads(Path("e2e-selection-plan.json").read_text())
-          if os.environ["EVENT_NAME"] == "workflow_dispatch":
+          if os.environ["EVENT_NAME"] in ("workflow_dispatch", "schedule"):
               executionPlan = plan
           else:
-              workflow = Path(".github/workflows/build-x86-image.yaml").read_text()
-              executionPlan = {"matrix": e2eSelector.expandWorkflow(workflow)}
+              # Ordinary PR/push checks never duplicate the trusted executor.
+              executionPlan = {"matrix": []}
           jobIds = sorted({entry["job"] for entry in executionPlan["matrix"]})
           matrices = {
               "k8sConformanceMatrix": e2eSelector.jobMatrix(
-                  executionPlan,
+                  plan,
                   "k8s-conformance-e2e",
               ),
               "fabricConformanceMatrix": e2eSelector.jobMatrix(
-                  executionPlan,
+                  plan,
                   "fabric-conformance-e2e",
               ),
           }
@@ -733,9 +738,11 @@ jobs:
   build-e2e-binaries:
     name: Build E2E Binaries
     needs: e2e-selection
-    if: github.event_name != 'workflow_dispatch' || github.actor == 'github-actions[bot]'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.actor == 'github-actions[bot]')
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    outputs:
+      sourceSHA: ${{ steps.source.outputs.sha }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -784,7 +791,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-e2e-go-${{ env.GO_VERSION }}-x86-${{ github.ref_name }}-
             ${{ runner.os }}-e2e-go-${{ env.GO_VERSION }}-x86-${{ github.base_ref }}-
-          lookup-only: true
 
       - name: Free disk space
         if: steps.lookup-go-cache.outputs.cache-hit != 'true'
@@ -803,8 +809,25 @@ jobs:
             ${{ runner.os }}-e2e-go-${{ env.GO_VERSION }}-x86-${{ github.base_ref }}-
 
       - run: make e2e-build
-        if: steps.lookup-go-cache.outputs.cache-hit != 'true'
         working-directory: ${{ env.E2E_DIR }}
+
+      - name: Package source-bound binaries
+        id: source
+        working-directory: ${{ env.E2E_DIR }}
+        run: |
+          git rev-parse HEAD > .e2e-prebuilt
+          echo "sha=$(cat .e2e-prebuilt)" >> "$GITHUB_OUTPUT"
+          find test/e2e -name '*.test' -type f -print | sort > binary-paths
+          test -s binary-paths
+          xargs sha256sum < binary-paths > .e2e-binaries.sha256
+          tar -cf "$RUNNER_TEMP/binaries.tar" .e2e-prebuilt .e2e-binaries.sha256 -T binary-paths
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: e2e-binaries-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/binaries.tar
+          compression-level: 0
+          retention-days: 3
 
   netpol-path-filter:
     name: Network Policy Path Filter
@@ -849,7 +872,7 @@ jobs:
 
   k8s-conformance-e2e:
     name: Kubernetes Conformance E2E
-    if: github.event_name != 'workflow_dispatch' || contains(fromJSON(needs.e2e-selection.outputs.executionJobIds), 'k8s-conformance-e2e')
+    if: contains(fromJSON(needs.e2e-selection.outputs.executionJobIds || '[]'), 'k8s-conformance-e2e')
     needs:
       - e2e-selection
       - build-fabric
@@ -904,6 +927,12 @@ jobs:
       - name: Export Go full version
         run: echo "GO_VERSION=${{ steps.setup-go.outputs.go-version }}" >> "$GITHUB_ENV"
 
+      - &restore-e2e-binaries
+        uses: ./.github/actions/e2e-binaries
+        with:
+          source-sha: ${{ needs.build-e2e-binaries.outputs.sourceSHA }}
+          directory: ${{ env.E2E_DIR || '.' }}
+
       - name: Go cache
         uses: actions/cache/restore@v6
         with:
@@ -931,7 +960,7 @@ jobs:
 
       - name: Set environment variables
         run: |
-          if [ $(($RANDOM%2)) -ne 0 ]; then
+          if [ "$CI_MEMORY_CHECK" = true ]; then
             # run as root and use valgrind to debug memory leak
             echo "VERSION=$(cat VERSION)-debug" >> "$GITHUB_ENV"
             echo "DEBUG_WRAPPER=valgrind" >> "$GITHUB_ENV"
@@ -1037,12 +1066,8 @@ jobs:
   k8s-netpol-e2e:
     name: Kubernetes Network Policy E2E
     if: |
-      (github.event_name == 'workflow_dispatch' &&
-       contains(fromJSON(needs.e2e-selection.outputs.executionJobIds), 'k8s-netpol-e2e')) ||
-      (github.event_name != 'workflow_dispatch' && (
-        always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') &&
-        (needs.netpol-path-filter.outputs.test-netpol == 1 || contains(github.event.pull_request.labels.*.name, 'network policy'))
-      ))
+      always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') &&
+      contains(fromJSON(needs.e2e-selection.outputs.executionJobIds || '[]'), 'k8s-netpol-e2e')
     needs:
       - e2e-selection
       - build-fabric
@@ -1105,6 +1130,7 @@ jobs:
       - name: Export Go full version
         run: echo "GO_VERSION=${{ steps.setup-go.outputs.go-version }}" >> "$GITHUB_ENV"
 
+      - *restore-e2e-binaries
       - name: Go cache
         uses: actions/cache/restore@v6
         with:
@@ -1134,7 +1160,7 @@ jobs:
 
       - name: Set environment variables
         run: |
-          if [ $(($RANDOM%2)) -ne 0 ]; then
+          if [ "$CI_MEMORY_CHECK" = true ]; then
             # run as root and use valgrind to debug memory leak
             echo "VERSION=$(cat VERSION)-debug" >> "$GITHUB_ENV"
             echo "DEBUG_WRAPPER=valgrind" >> "$GITHUB_ENV"
@@ -1236,12 +1262,8 @@ jobs:
   cyclonus-netpol-e2e:
     name: Cyclonus Network Policy E2E
     if: |
-      (github.event_name == 'workflow_dispatch' &&
-       contains(fromJSON(needs.e2e-selection.outputs.executionJobIds), 'cyclonus-netpol-e2e')) ||
-      (github.event_name != 'workflow_dispatch' && (
-        always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') &&
-        (needs.netpol-path-filter.outputs.test-netpol == 1 || contains(github.event.pull_request.labels.*.name, 'network policy'))
-      ))
+      always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') &&
+      contains(fromJSON(needs.e2e-selection.outputs.executionJobIds || '[]'), 'cyclonus-netpol-e2e')
     needs:
       - e2e-selection
       - build-fabric
@@ -1304,7 +1326,7 @@ jobs:
 
       - name: Set environment variables
         run: |
-          if [ $(($RANDOM%2)) -ne 0 ]; then
+          if [ "$CI_MEMORY_CHECK" = true ]; then
             # run as root and use valgrind to debug memory leak
             echo "VERSION=$(cat VERSION)-debug" >> "$GITHUB_ENV"
             echo "DEBUG_WRAPPER=valgrind" >> "$GITHUB_ENV"
@@ -1407,7 +1429,7 @@ jobs:
 
   fabric-conformance-e2e:
     name: fabric Conformance E2E
-    if: github.event_name != 'workflow_dispatch' || contains(fromJSON(needs.e2e-selection.outputs.executionJobIds), 'fabric-conformance-e2e')
+    if: contains(fromJSON(needs.e2e-selection.outputs.executionJobIds || '[]'), 'fabric-conformance-e2e')
     needs:
       - e2e-selection
       - build-fabric
@@ -1457,6 +1479,7 @@ jobs:
       - name: Export Go full version
         run: echo "GO_VERSION=${{ steps.setup-go.outputs.go-version }}" >> "$GITHUB_ENV"
 
+      - *restore-e2e-binaries
       - name: Go cache
         uses: actions/cache/restore@v6
         with:
@@ -1484,7 +1507,7 @@ jobs:
 
       - name: Set environment variables
         run: |
-          if [ $(($RANDOM%2)) -ne 0 ]; then
+          if [ "$CI_MEMORY_CHECK" = true ]; then
             # run as root and use valgrind to debug memory leak
             echo "VERSION=$(cat VERSION)-debug" >> "$GITHUB_ENV"
             echo "DEBUG_WRAPPER=valgrind" >> "$GITHUB_ENV"
@@ -1596,7 +1619,7 @@ jobs:
 
   fabric-ic-conformance-e2e:
     name: fabric IC Conformance E2E
-    if: github.event_name != 'workflow_dispatch' || contains(fromJSON(needs.e2e-selection.outputs.executionJobIds), 'fabric-ic-conformance-e2e')
+    if: contains(fromJSON(needs.e2e-selection.outputs.executionJobIds || '[]'), 'fabric-ic-conformance-e2e')
     needs:
       - e2e-selection
       - build-fabric
@@ -1650,6 +1673,7 @@ jobs:
       - name: Export Go full version
         run: echo "GO_VERSION=${{ steps.setup-go.outputs.go-version }}" >> "$GITHUB_ENV"
 
+      - *restore-e2e-binaries
       - name: Go cache
         uses: actions/cache/restore@v6
         with:
@@ -1752,7 +1776,7 @@ jobs:
 
   multus-conformance-e2e:
     name: Multus Conformance E2E
-    if: github.event_name != 'workflow_dispatch' || contains(fromJSON(needs.e2e-selection.outputs.executionJobIds), 'multus-conformance-e2e')
+    if: contains(fromJSON(needs.e2e-selection.outputs.executionJobIds || '[]'), 'multus-conformance-e2e')
     needs:
       - e2e-selection
       - build-fabric
@@ -1806,6 +1830,7 @@ jobs:
       - name: Export Go full version
         run: echo "GO_VERSION=${{ steps.setup-go.outputs.go-version }}" >> "$GITHUB_ENV"
 
+      - *restore-e2e-binaries
       - name: Go cache
         uses: actions/cache/restore@v6
         with:
@@ -1898,7 +1923,7 @@ jobs:
 
   non-primary-cni-e2e:
     name: Non-Primary CNI E2E
-    if: github.event_name != 'workflow_dispatch' || contains(fromJSON(needs.e2e-selection.outputs.executionJobIds), 'non-primary-cni-e2e')
+    if: contains(fromJSON(needs.e2e-selection.outputs.executionJobIds || '[]'), 'non-primary-cni-e2e')
     needs:
       - e2e-selection
       - build-fabric
@@ -1955,6 +1980,7 @@ jobs:
       - name: Export Go full version
         run: echo "GO_VERSION=${{ steps.setup-go.outputs.go-version }}" >> "$GITHUB_ENV"
 
+      - *restore-e2e-binaries
       - name: Go cache
         uses: actions/cache/restore@v6
         with:
@@ -2045,7 +2071,7 @@ jobs:
 
   fabric-hosted-ovn-central-e2e:
     name: fabric Hosted OVN Central E2E (${{ matrix.ip-family }}, ${{ matrix.tenant-control-plane }} control-plane)
-    if: github.event_name != 'workflow_dispatch' || contains(fromJSON(needs.e2e-selection.outputs.executionJobIds), 'fabric-hosted-ovn-central-e2e')
+    if: contains(fromJSON(needs.e2e-selection.outputs.executionJobIds || '[]'), 'fabric-hosted-ovn-central-e2e')
     needs:
       - e2e-selection
       - build-fabric
@@ -2098,6 +2124,7 @@ jobs:
       - name: Export Go full version
         run: echo "GO_VERSION=${{ steps.setup-go.outputs.go-version }}" >> "$GITHUB_ENV"
 
+      - *restore-e2e-binaries
       - name: Go cache
         uses: actions/cache/restore@v6
         with:
@@ -2200,7 +2227,7 @@ jobs:
 
   chart-test:
     name: Chart Installation/Uninstallation Test
-    if: github.event_name != 'workflow_dispatch' || contains(fromJSON(needs.e2e-selection.outputs.executionJobIds), 'chart-test')
+    if: contains(fromJSON(needs.e2e-selection.outputs.executionJobIds || '[]'), 'chart-test')
     needs:
       - e2e-selection
       - build-fabric
@@ -2269,7 +2296,7 @@ jobs:
 
   underlay-logical-gateway-installation-test:
     name: Underlay Logical Gateway Installation Test
-    if: github.event_name != 'workflow_dispatch' || contains(fromJSON(needs.e2e-selection.outputs.executionJobIds), 'underlay-logical-gateway-installation-test')
+    if: contains(fromJSON(needs.e2e-selection.outputs.executionJobIds || '[]'), 'underlay-logical-gateway-installation-test')
     needs:
       - e2e-selection
       - build-fabric
@@ -2330,7 +2357,7 @@ jobs:
 
   no-ovn-lb-test:
     name: Disable OVN LB Test
-    if: github.event_name != 'workflow_dispatch' || contains(fromJSON(needs.e2e-selection.outputs.executionJobIds), 'no-ovn-lb-test')
+    if: contains(fromJSON(needs.e2e-selection.outputs.executionJobIds || '[]'), 'no-ovn-lb-test')
     needs:
       - e2e-selection
       - build-fabric
@@ -2393,7 +2420,7 @@ jobs:
 
   no-np-test:
     name: Disable Network Policy Test
-    if: github.event_name != 'workflow_dispatch' || contains(fromJSON(needs.e2e-selection.outputs.executionJobIds), 'no-np-test')
+    if: contains(fromJSON(needs.e2e-selection.outputs.executionJobIds || '[]'), 'no-np-test')
     needs:
       - e2e-selection
       - build-fabric
@@ -2456,7 +2483,7 @@ jobs:
 
   webhook-e2e:
     name: Webhook E2E
-    if: github.event_name != 'workflow_dispatch' || contains(fromJSON(needs.e2e-selection.outputs.executionJobIds), 'webhook-e2e')
+    if: contains(fromJSON(needs.e2e-selection.outputs.executionJobIds || '[]'), 'webhook-e2e')
     needs:
       - e2e-selection
       - build-fabric
@@ -2503,6 +2530,7 @@ jobs:
       - name: Export Go full version
         run: echo "GO_VERSION=${{ steps.setup-go.outputs.go-version }}" >> "$GITHUB_ENV"
 
+      - *restore-e2e-binaries
       - name: Go cache
         uses: actions/cache/restore@v6
         with:
@@ -2566,7 +2594,7 @@ jobs:
 
   installation-compatibility-test:
     name: Installation Compatibility Test
-    if: github.event_name != 'workflow_dispatch' || contains(fromJSON(needs.e2e-selection.outputs.executionJobIds), 'installation-compatibility-test')
+    if: contains(fromJSON(needs.e2e-selection.outputs.executionJobIds || '[]'), 'installation-compatibility-test')
     needs:
       - e2e-selection
       - build-fabric
@@ -2634,7 +2662,7 @@ jobs:
 
   fabric-cnp-domain-e2e:
     name: fabric CNP Domain E2E
-    if: github.event_name != 'workflow_dispatch' || contains(fromJSON(needs.e2e-selection.outputs.executionJobIds), 'fabric-cnp-domain-e2e')
+    if: contains(fromJSON(needs.e2e-selection.outputs.executionJobIds || '[]'), 'fabric-cnp-domain-e2e')
     needs:
       - e2e-selection
       - build-fabric
@@ -2688,6 +2716,7 @@ jobs:
       - name: Export Go full version
         run: echo "GO_VERSION=${{ steps.setup-go.outputs.go-version }}" >> "$GITHUB_ENV"
 
+      - *restore-e2e-binaries
       - name: Go cache
         uses: actions/cache/restore@v6
         with:
@@ -2713,7 +2742,7 @@ jobs:
 
       - name: Set environment variables
         run: |
-          if [ $(($RANDOM%2)) -ne 0 ]; then
+          if [ "$CI_MEMORY_CHECK" = true ]; then
             # run as root and use valgrind to debug memory leak
             echo "VERSION=$(cat VERSION)-debug" >> "$GITHUB_ENV"
             echo "DEBUG_WRAPPER=valgrind" >> "$GITHUB_ENV"
@@ -2770,7 +2799,7 @@ jobs:
 
   fabric-anp-domain-e2e:
     name: fabric ANP Domain E2E
-    if: github.event_name != 'workflow_dispatch' || contains(fromJSON(needs.e2e-selection.outputs.executionJobIds), 'fabric-anp-domain-e2e')
+    if: contains(fromJSON(needs.e2e-selection.outputs.executionJobIds || '[]'), 'fabric-anp-domain-e2e')
     needs:
       - e2e-selection
       - build-fabric
@@ -2824,6 +2853,7 @@ jobs:
       - name: Export Go full version
         run: echo "GO_VERSION=${{ steps.setup-go.outputs.go-version }}" >> "$GITHUB_ENV"
 
+      - *restore-e2e-binaries
       - name: Go cache
         uses: actions/cache/restore@v6
         with:
@@ -2849,7 +2879,7 @@ jobs:
 
       - name: Set environment variables
         run: |
-          if [ $(($RANDOM%2)) -ne 0 ]; then
+          if [ "$CI_MEMORY_CHECK" = true ]; then
             # run as root and use valgrind to debug memory leak
             echo "VERSION=$(cat VERSION)-debug" >> "$GITHUB_ENV"
             echo "DEBUG_WRAPPER=valgrind" >> "$GITHUB_ENV"
@@ -2906,7 +2936,7 @@ jobs:
 
   cilium-chaining-e2e:
     name: Cilium Chaining E2E
-    if: github.event_name != 'workflow_dispatch' || contains(fromJSON(needs.e2e-selection.outputs.executionJobIds), 'cilium-chaining-e2e')
+    if: contains(fromJSON(needs.e2e-selection.outputs.executionJobIds || '[]'), 'cilium-chaining-e2e')
     needs:
       - e2e-selection
       - build-fabric
@@ -2975,6 +3005,7 @@ jobs:
       - name: Export Go full version
         run: echo "GO_VERSION=${{ steps.setup-go.outputs.go-version }}" >> "$GITHUB_ENV"
 
+      - *restore-e2e-binaries
       - name: Go cache
         uses: actions/cache/restore@v6
         with:
@@ -3069,7 +3100,7 @@ jobs:
 
   fabric-ha-e2e:
     name: fabric HA E2E
-    if: github.event_name != 'workflow_dispatch' || contains(fromJSON(needs.e2e-selection.outputs.executionJobIds), 'fabric-ha-e2e')
+    if: contains(fromJSON(needs.e2e-selection.outputs.executionJobIds || '[]'), 'fabric-ha-e2e')
     needs:
       - e2e-selection
       - build-fabric
@@ -3129,6 +3160,7 @@ jobs:
       - name: Export Go full version
         run: echo "GO_VERSION=${{ steps.setup-go.outputs.go-version }}" >> "$GITHUB_ENV"
 
+      - *restore-e2e-binaries
       - name: Go cache
         uses: actions/cache/restore@v6
         with:
@@ -3204,7 +3236,7 @@ jobs:
 
   fabric-submariner-conformance-e2e:
     name: fabric Submariner Conformance E2E
-    if: github.event_name != 'workflow_dispatch' || contains(fromJSON(needs.e2e-selection.outputs.executionJobIds), 'fabric-submariner-conformance-e2e')
+    if: contains(fromJSON(needs.e2e-selection.outputs.executionJobIds || '[]'), 'fabric-submariner-conformance-e2e')
     needs:
       - e2e-selection
       - build-fabric
@@ -3298,7 +3330,7 @@ jobs:
 
   vpc-dynamic-routing-e2e:
     name: VPC Dynamic Routing E2E
-    if: github.event_name != 'workflow_dispatch' || contains(fromJSON(needs.e2e-selection.outputs.executionJobIds), 'vpc-dynamic-routing-e2e')
+    if: contains(fromJSON(needs.e2e-selection.outputs.executionJobIds || '[]'), 'vpc-dynamic-routing-e2e')
     needs:
       - e2e-selection
       - build-fabric
@@ -3345,6 +3377,7 @@ jobs:
       - name: Export Go full version
         run: echo "GO_VERSION=${{ steps.setup-go.outputs.go-version }}" >> "$GITHUB_ENV"
 
+      - *restore-e2e-binaries
       - name: Go cache
         uses: actions/cache/restore@v6
         with:
@@ -3434,7 +3467,7 @@ jobs:
 
   ovn-vpc-nat-gw-conformance-e2e:
     name: OVN VPC NAT Gateway E2E
-    if: github.event_name != 'workflow_dispatch' || contains(fromJSON(needs.e2e-selection.outputs.executionJobIds), 'ovn-vpc-nat-gw-conformance-e2e')
+    if: contains(fromJSON(needs.e2e-selection.outputs.executionJobIds || '[]'), 'ovn-vpc-nat-gw-conformance-e2e')
     needs:
       - e2e-selection
       - build-fabric
@@ -3481,6 +3514,7 @@ jobs:
       - name: Export Go full version
         run: echo "GO_VERSION=${{ steps.setup-go.outputs.go-version }}" >> "$GITHUB_ENV"
 
+      - *restore-e2e-binaries
       - name: Go cache
         uses: actions/cache/restore@v6
         with:
@@ -3576,7 +3610,7 @@ jobs:
 
   fabric-ipsec-e2e:
     name: OVN IPSEC E2E
-    if: github.event_name != 'workflow_dispatch' || contains(fromJSON(needs.e2e-selection.outputs.executionJobIds), 'fabric-ipsec-e2e')
+    if: contains(fromJSON(needs.e2e-selection.outputs.executionJobIds || '[]'), 'fabric-ipsec-e2e')
     needs:
       - e2e-selection
       - build-fabric
@@ -3623,6 +3657,7 @@ jobs:
       - name: Export Go full version
         run: echo "GO_VERSION=${{ steps.setup-go.outputs.go-version }}" >> "$GITHUB_ENV"
 
+      - *restore-e2e-binaries
       - name: Go cache
         uses: actions/cache/restore@v6
         with:
@@ -3713,7 +3748,7 @@ jobs:
 
   fabric-ipsec-cert-mgr-e2e:
     name: OVN IPSEC E2E CERT MANAGER
-    if: github.event_name != 'workflow_dispatch' || contains(fromJSON(needs.e2e-selection.outputs.executionJobIds), 'fabric-ipsec-cert-mgr-e2e')
+    if: contains(fromJSON(needs.e2e-selection.outputs.executionJobIds || '[]'), 'fabric-ipsec-cert-mgr-e2e')
     needs:
       - e2e-selection
       - build-fabric
@@ -3760,6 +3795,7 @@ jobs:
       - name: Export Go full version
         run: echo "GO_VERSION=${{ steps.setup-go.outputs.go-version }}" >> "$GITHUB_ENV"
 
+      - *restore-e2e-binaries
       - name: Go cache
         uses: actions/cache/restore@v6
         with:
@@ -3848,7 +3884,7 @@ jobs:
 
   fabric-connectivity-test:
     name: fabric Connectivity E2E
-    if: github.event_name != 'workflow_dispatch' || contains(fromJSON(needs.e2e-selection.outputs.executionJobIds), 'fabric-connectivity-test')
+    if: contains(fromJSON(needs.e2e-selection.outputs.executionJobIds || '[]'), 'fabric-connectivity-test')
     needs:
       - e2e-selection
       - build-fabric
@@ -3901,6 +3937,7 @@ jobs:
       - name: Export Go full version
         run: echo "GO_VERSION=${{ steps.setup-go.outputs.go-version }}" >> "$GITHUB_ENV"
 
+      - *restore-e2e-binaries
       - name: Go cache
         uses: actions/cache/restore@v6
         with:
@@ -3958,7 +3995,7 @@ jobs:
 
   fabric-underlay-metallb-e2e:
     name: OVN METALLB E2E
-    if: github.event_name != 'workflow_dispatch' || contains(fromJSON(needs.e2e-selection.outputs.executionJobIds), 'fabric-underlay-metallb-e2e')
+    if: contains(fromJSON(needs.e2e-selection.outputs.executionJobIds || '[]'), 'fabric-underlay-metallb-e2e')
     needs:
       - e2e-selection
       - build-fabric
@@ -4012,6 +4049,7 @@ jobs:
       - name: Export Go full version
         run: echo "GO_VERSION=${{ steps.setup-go.outputs.go-version }}" >> "$GITHUB_ENV"
 
+      - *restore-e2e-binaries
       - name: Go cache
         uses: actions/cache/restore@v6
         with:
@@ -4101,7 +4139,7 @@ jobs:
 
   router-lb-rule-e2e:
     name: Router LB Rule E2E
-    if: github.event_name != 'workflow_dispatch' || contains(fromJSON(needs.e2e-selection.outputs.executionJobIds), 'router-lb-rule-e2e')
+    if: contains(fromJSON(needs.e2e-selection.outputs.executionJobIds || '[]'), 'router-lb-rule-e2e')
     needs:
       - e2e-selection
       - build-fabric
@@ -4148,6 +4186,7 @@ jobs:
       - name: Export Go full version
         run: echo "GO_VERSION=${{ steps.setup-go.outputs.go-version }}" >> "$GITHUB_ENV"
 
+      - *restore-e2e-binaries
       - name: Go cache
         uses: actions/cache/restore@v6
         with:
@@ -4235,7 +4274,7 @@ jobs:
 
   dns-zone-e2e:
     name: DNS Zone E2E
-    if: github.event_name != 'workflow_dispatch' || contains(fromJSON(needs.e2e-selection.outputs.executionJobIds), 'dns-zone-e2e')
+    if: contains(fromJSON(needs.e2e-selection.outputs.executionJobIds || '[]'), 'dns-zone-e2e')
     needs:
       - e2e-selection
       - build-fabric
@@ -4282,6 +4321,7 @@ jobs:
       - name: Export Go full version
         run: echo "GO_VERSION=${{ steps.setup-go.outputs.go-version }}" >> "$GITHUB_ENV"
 
+      - *restore-e2e-binaries
       - name: Go cache
         uses: actions/cache/restore@v6
         with:

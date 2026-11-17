@@ -387,9 +387,9 @@ def renderSummary(plan, changedPaths):
         else f"mandatory smoke ({len(mandatorySmoke)} runner jobs)"
     )
     lines = [
-        "## x86 E2E selection shadow report",
+        "## x86 E2E selection",
         "",
-        "> Shadow mode only: the current x86 E2E jobs still run unchanged.",
+        "> Trusted executor coverage; ordinary PR/push checks do not duplicate it.",
         "",
         f"- HEAD: `{plan['headSHA']}`",
         f"- Full suite: `{'yes' if plan['full'] else 'no'}`",

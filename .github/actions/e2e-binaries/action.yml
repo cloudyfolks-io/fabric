@@ -1,0 +1,29 @@
+name: Restore source-bound E2E binaries
+description: Same-run artifacts only; source and binary checksums must match
+inputs:
+  source-sha:
+    required: true
+    description: Exact commit built by the producer
+  directory:
+    default: "."
+    description: Checked out E2E source directory
+runs:
+  using: composite
+  steps:
+    - uses: actions/download-artifact@v8
+      with:
+        name: e2e-binaries-${{ github.run_id }}-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/e2e-binaries
+    - shell: bash
+      env:
+        SOURCE_SHA: ${{ inputs.source-sha }}
+        SOURCE_DIR: ${{ inputs.directory }}
+        ARCHIVE: ${{ runner.temp }}/e2e-binaries/binaries.tar
+      run: |
+        set -euo pipefail
+        test -n "$SOURCE_SHA"
+        test "$(git -C "$SOURCE_DIR" rev-parse HEAD)" = "$SOURCE_SHA"
+        tar -xf "$ARCHIVE" -C "$SOURCE_DIR"
+        cd "$SOURCE_DIR"
+        test "$(cat .e2e-prebuilt)" = "$SOURCE_SHA"
+        sha256sum --check --strict .e2e-binaries.sha256

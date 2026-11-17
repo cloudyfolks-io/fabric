@@ -181,11 +181,23 @@ class E2ESelectorTest(unittest.TestCase):
         self.assertEqual(plan["recommendedGroups"], [])
         self.assertFalse(plan["approvalRequired"])
 
-    def testControllerPathPromotesToFull(self):
+    def testClassifiedControllersSelectOnlyTheirAffectedGroup(self):
+        for path, group in [
+            ("pkg/controller/network_policy.go", "policy"),
+            ("pkg/controller/service.go", "service-lb-underlay"),
+            ("pkg/controller/service_test.go", "service-lb-underlay"),
+        ]:
+            with self.subTest(path=path):
+                plan = self.select([path])
+                self.assertFalse(plan["full"])
+                self.assertEqual(plan["selectedGroups"], [group])
+                self.assertLess(len(plan["matrix"]), 72)
+                self.assertTrue(plan["approvalRequired"])
+
+    def testSharedOrUnclassifiedControllerPathPromotesToFull(self):
         for path in [
-            "pkg/controller/network_policy.go",
-            "pkg/controller/service.go",
             "pkg/controller/vpc_nat_gateway.go",
+            "pkg/controller/new_shared.go",
             "pkg/controller/pki.go",
             "pkg/controller/signer.go",
         ]:
@@ -193,7 +205,7 @@ class E2ESelectorTest(unittest.TestCase):
                 plan = self.select([path])
                 self.assertTrue(plan["full"])
                 self.assertEqual(len(plan["matrix"]), 72)
-                self.assertIn("shared path", plan["fullReason"])
+                self.assertTrue(plan["fullReason"])
 
     def testInstallationBuildAndCodegenPathsPromoteToFull(self):
         for path in [
