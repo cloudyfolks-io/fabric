@@ -47,8 +47,10 @@ func TestVipIPAMAllocationPreservesBothFamiliesOnRestart(t *testing.T) {
 		{util.SwitchLBRuleVip, "", "fd00::10", "fd00::10", ""},
 		{util.SwitchLBRuleVip, "10.0.0.10", "fd00::10", "10.0.0.10,fd00::10", ""},
 	} {
-		vip := &fabricv1.Vip{Spec: fabricv1.VipSpec{Type: tc.kind},
-			Status: fabricv1.VipStatus{V4ip: tc.v4, V6ip: tc.v6, Mac: "aa:bb:cc:dd:ee:ff"}}
+		vip := &fabricv1.Vip{
+			Spec:   fabricv1.VipSpec{Type: tc.kind},
+			Status: fabricv1.VipStatus{V4ip: tc.v4, V6ip: tc.v6, Mac: "aa:bb:cc:dd:ee:ff"},
+		}
 		ip, mac := vipIPAMAllocation(vip)
 		require.Equal(t, tc.wantIP, ip)
 		require.Equal(t, tc.wantMAC, mac)
@@ -58,16 +60,22 @@ func TestVipIPAMAllocationPreservesBothFamiliesOnRestart(t *testing.T) {
 func TestSwitchLBVipProxyPrecedesStalePortRemoval(t *testing.T) {
 	for _, proxyFails := range []bool{false, true} {
 		t.Run(map[bool]string{false: "success", true: "proxy failure preserves stale responder"}[proxyFails], func(t *testing.T) {
-			subnet := &fabricv1.Subnet{ObjectMeta: metav1.ObjectMeta{Name: "tenant"},
-				Spec: fabricv1.SubnetSpec{Vpc: "vpc", Provider: util.OvnProvider}}
-			vpc := &fabricv1.Vpc{ObjectMeta: metav1.ObjectMeta{Name: "vpc"},
-				Status: fabricv1.VpcStatus{Router: "vpc"}}
+			subnet := &fabricv1.Subnet{
+				ObjectMeta: metav1.ObjectMeta{Name: "tenant"},
+				Spec:       fabricv1.SubnetSpec{Vpc: "vpc", Provider: util.OvnProvider},
+			}
+			vpc := &fabricv1.Vpc{
+				ObjectMeta: metav1.ObjectMeta{Name: "vpc"},
+				Status:     fabricv1.VpcStatus{Router: "vpc"},
+			}
 			fc, err := newFakeControllerWithOptions(t, &FakeControllerOptions{
 				Subnets: []*fabricv1.Subnet{subnet}, Vpcs: []*fabricv1.Vpc{vpc},
 			})
 			require.NoError(t, err)
-			vip := &fabricv1.Vip{ObjectMeta: metav1.ObjectMeta{Name: "address"},
-				Spec: fabricv1.VipSpec{Subnet: "tenant", Namespace: "ns", Type: util.SwitchLBRuleVip, V4ip: "10.0.0.10"}}
+			vip := &fabricv1.Vip{
+				ObjectMeta: metav1.ObjectMeta{Name: "address"},
+				Spec:       fabricv1.VipSpec{Subnet: "tenant", Namespace: "ns", Type: util.SwitchLBRuleVip, V4ip: "10.0.0.10"},
+			}
 			other := vip.DeepCopy()
 			other.Name = "other"
 			other.Status.V4ip = "10.0.0.11"
@@ -75,7 +83,8 @@ func TestSwitchLBVipProxyPrecedesStalePortRemoval(t *testing.T) {
 			require.NoError(t, indexer.Add(other))
 			fc.fakeController.virtualIpsLister = fabriclisters.NewVipLister(indexer)
 			fc.mockOvnClient.EXPECT().GetLogicalRouterPort("vpc-tenant", false).Return(
-				&ovnnb.LogicalRouterPort{MAC: "02:00:00:00:00:01"}, nil)
+				&ovnnb.LogicalRouterPort{MAC: "02:00:00:00:00:01"}, nil,
+			)
 			proxy := fc.mockOvnClient.EXPECT().SetLogicalSwitchPortArpProxyIPs("tenant-vpc", "02:00:00:00:00:01", []string{"10.0.0.10", "10.0.0.11"})
 			if proxyFails {
 				proxy.Return(errors.New("database unavailable"))
