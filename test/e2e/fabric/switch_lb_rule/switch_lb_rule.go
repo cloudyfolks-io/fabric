@@ -470,6 +470,30 @@ var _ = framework.Describe("[group:slr]", func() {
 		secondVIPName := "address-second-" + suffix
 		vipClient.CreateSync(framework.MakeVip(namespaceName, secondVIPName, subnetName, secondV4, secondV6, util.SwitchLBRuleVip))
 		defer vipClient.DeleteSync(secondVIPName)
+		ginkgo.DeferCleanup(func() {
+			if !ginkgo.CurrentSpecReport().Failed() {
+				return
+			}
+			// Capture datapath evidence before the suite tears the fixture down.
+			// These commands are diagnostic only; never turn a failed assertion
+			// into a pass or hide the original failure.
+			for _, pod := range []string{clientPodName, pods.Items[0].Name, pods.Items[1].Name} {
+				for _, command := range []string{"ip -br address", "ip route show table all", "ip -6 route show table all", "ip neigh show", "ip -6 neigh show"} {
+					output, err := e2epodoutput.RunHostCmd(namespaceName, pod, command)
+					fmt.Fprintf(ginkgo.GinkgoWriter, "diagnostic pod=%s command=%q output=%q error=%v\n", pod, command, output, err)
+				}
+			}
+			for _, target := range []string{secondaryIP, secondIP, vip} {
+				command := fmt.Sprintf("curl -q -v --connect-timeout 3 --max-time 3 %s", util.JoinHostPort(target, backendPort))
+				if target == vip {
+					command = fmt.Sprintf("curl -q -v --connect-timeout 3 --max-time 3 %s", util.JoinHostPort(target, selSlrFrontPort))
+				}
+				output, err := e2epodoutput.RunHostCmd(namespaceName, clientPodName, command)
+				fmt.Fprintf(ginkgo.GinkgoWriter, "diagnostic client=%s command=%q output=%q error=%v\n", clientPodName, command, output, err)
+			}
+			output, stderr, err := framework.NBExec("ovn-nbctl show")
+			fmt.Fprintf(ginkgo.GinkgoWriter, "diagnostic ovn-nbctl show: stdout=%s stderr=%s error=%v\n", output, stderr, err)
+		})
 		client := framework.MakePod(namespaceName, clientPodName, nil, podAnnotations, f.FabricImage, []string{"sleep", "infinity"}, nil)
 		client.Spec.NodeName = pods.Items[0].Spec.NodeName
 		_ = podClient.CreateSync(client)
