@@ -81,7 +81,8 @@ func (c *Controller) handleAddVirtualIP(key string) error {
 	}
 	if cachedVip.Status.Mac != "" {
 		if cachedVip.Spec.Type == util.SwitchLBRuleVip {
-			return c.reconcileSwitchLBVipPort(cachedVip)
+			_, err := c.reconcileSwitchLBVipPort(cachedVip)
+			return err
 		}
 		return nil
 	}
@@ -126,7 +127,10 @@ func (c *Controller) handleAddVirtualIP(key string) error {
 		// makes OVN's L2 lookup nondeterministically blackhole gateway traffic.
 		// Install the proxy before publishing Ready, including newly allocated
 		// addresses which the informer has not observed yet.
-		if err := c.reconcileSwitchLBVipPort(vip, v4ip, v6ip); err != nil {
+		// Report the MAC that actually answers ARP/ND, not the internal
+		// IPAM reservation's unique MAC. Do not assign it to a VIF.
+		mac, err = c.reconcileSwitchLBVipPort(vip, v4ip, v6ip)
+		if err != nil {
 			return err
 		}
 	}
@@ -194,7 +198,7 @@ func (c *Controller) handleUpdateVirtualIP(key string) error {
 
 		c.ipam.ReleaseAddressByPod(vip.Name, vip.Spec.Subnet)
 		if vip.Spec.Type == util.SwitchLBRuleVip {
-			if err := c.syncSwitchLBVipArpProxy(vip.Spec.Subnet); err != nil {
+			if _, err := c.syncSwitchLBVipArpProxy(vip.Spec.Subnet); err != nil {
 				return err
 			}
 		}
@@ -229,13 +233,15 @@ func (c *Controller) handleUpdateVirtualIP(key string) error {
 	}
 
 	if vip.Status.Mac == "" {
+		mac := vip.Spec.MacAddress
 		if vip.Spec.Type == util.SwitchLBRuleVip {
-			if err := c.reconcileSwitchLBVipPort(vip); err != nil {
+			mac, err = c.reconcileSwitchLBVipPort(vip)
+			if err != nil {
 				return err
 			}
 		}
 		if err = c.createOrUpdateVipCR(key, vip.Spec.Namespace, vip.Spec.Subnet,
-			vip.Spec.V4ip, vip.Spec.V6ip, vip.Spec.MacAddress); err != nil {
+			vip.Spec.V4ip, vip.Spec.V6ip, mac); err != nil {
 			klog.Error(err)
 			return err
 		}
@@ -246,7 +252,8 @@ func (c *Controller) handleUpdateVirtualIP(key string) error {
 		return err
 	}
 	if vip.Spec.Type == util.SwitchLBRuleVip {
-		return c.reconcileSwitchLBVipPort(vip)
+		_, err := c.reconcileSwitchLBVipPort(vip)
+		return err
 	}
 	return nil
 }
@@ -256,7 +263,7 @@ func (c *Controller) handleDelVirtualIP(vip *fabricv1.Vip) error {
 
 	if vip.Spec.Subnet != "" {
 		if vip.Spec.Type == util.SwitchLBRuleVip {
-			if err := c.syncSwitchLBVipArpProxy(vip.Spec.Subnet); err != nil {
+			if _, err := c.syncSwitchLBVipArpProxy(vip.Spec.Subnet); err != nil {
 				return err
 			}
 		}
@@ -291,36 +298,37 @@ func switchLBVipProxyIPs(vips []*fabricv1.Vip, subnet string, extraIPs ...string
 	return slices.Compact(ips)
 }
 
-func (c *Controller) reconcileSwitchLBVipPort(vip *fabricv1.Vip, extraIPs ...string) error {
+func (c *Controller) reconcileSwitchLBVipPort(vip *fabricv1.Vip, extraIPs ...string) (string, error) {
 	subnet, err := c.subnetsLister.Get(vip.Spec.Subnet)
 	if err != nil {
-		return err
+		return "", err
 	}
 	ips := append(slices.Clone(extraIPs), vip.Spec.V4ip, vip.Spec.V6ip, vip.Status.V4ip, vip.Status.V6ip)
-	if err := c.syncSwitchLBVipArpProxy(subnet.Name, ips...); err != nil {
-		return err
+	mac, err := c.syncSwitchLBVipArpProxy(subnet.Name, ips...)
+	if err != nil {
+		return "", err
 	}
 	// Remove the pre-fix VIF only after its responder has a replacement.
-	return c.OVNNbClient.DeleteLogicalSwitchPort(ovs.PodNameToPortName(vip.Name, vip.Spec.Namespace, subnet.Spec.Provider))
+	return mac, c.OVNNbClient.DeleteLogicalSwitchPort(ovs.PodNameToPortName(vip.Name, vip.Spec.Namespace, subnet.Spec.Provider))
 }
 
-func (c *Controller) syncSwitchLBVipArpProxy(subnetName string, extraIPs ...string) error {
+func (c *Controller) syncSwitchLBVipArpProxy(subnetName string, extraIPs ...string) (string, error) {
 	c.subnetKeyMutex.LockKey(subnetName)
 	defer func() { _ = c.subnetKeyMutex.UnlockKey(subnetName) }()
 	subnet, err := c.subnetsLister.Get(subnetName)
 	if k8serrors.IsNotFound(err) {
-		return nil
+		return "", nil
 	}
 	if err != nil {
-		return err
+		return "", err
 	}
 	vpc, err := c.vpcsLister.Get(subnet.Spec.Vpc)
 	if err != nil {
-		return err
+		return "", err
 	}
 	vips, err := c.virtualIpsLister.List(labels.Everything())
 	if err != nil {
-		return err
+		return "", err
 	}
 	ips := switchLBVipProxyIPs(vips, subnetName, extraIPs...)
 	lspName := fmt.Sprintf("%s-%s", subnetName, vpc.Status.Router)
@@ -328,20 +336,20 @@ func (c *Controller) syncSwitchLBVipArpProxy(subnetName string, extraIPs ...stri
 	if len(ips) == 0 {
 		exists, err := c.OVNNbClient.LogicalSwitchPortExists(lspName)
 		if err != nil || !exists {
-			return err
+			return "", err
 		}
 	} else {
 		lrpName := fmt.Sprintf("%s-%s", vpc.Status.Router, subnetName)
 		lrp, err := c.OVNNbClient.GetLogicalRouterPort(lrpName, false)
 		if err != nil {
-			return err
+			return "", err
 		}
 		if lrp == nil || lrp.MAC == "" {
-			return fmt.Errorf("logical router port %s must have a MAC for VIP proxy", lrpName)
+			return "", fmt.Errorf("logical router port %s must have a MAC for VIP proxy", lrpName)
 		}
 		mac = lrp.MAC
 	}
-	return c.OVNNbClient.SetLogicalSwitchPortArpProxyIPs(lspName, mac, ips)
+	return mac, c.OVNNbClient.SetLogicalSwitchPortArpProxyIPs(lspName, mac, ips)
 }
 
 func (c *Controller) handleUpdateVirtualParents(key string) error {

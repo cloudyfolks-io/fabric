@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -14,6 +15,67 @@ import (
 	"github.com/cloudyfolks-io/fabric/pkg/ovsdb/ovnnb"
 	"github.com/cloudyfolks-io/fabric/pkg/util"
 )
+
+func TestSwitchLBVipReportsSharedRouterMACWithoutOwningIt(t *testing.T) {
+	for _, tc := range []struct{ cidr, gateway string }{
+		{"10.0.0.0/24", "10.0.0.1"},
+		{"fd00::/64", "fd00::1"},
+		{"10.0.0.0/24,fd00::/64", "10.0.0.1,fd00::1"},
+	} {
+		t.Run(tc.cidr, func(t *testing.T) {
+			subnet := &fabricv1.Subnet{
+				ObjectMeta: metav1.ObjectMeta{Name: "tenant"},
+				Spec:       fabricv1.SubnetSpec{Vpc: "vpc", Provider: util.OvnProvider, CIDRBlock: tc.cidr, Gateway: tc.gateway},
+			}
+			vpc := &fabricv1.Vpc{
+				ObjectMeta: metav1.ObjectMeta{Name: "vpc"},
+				Status:     fabricv1.VpcStatus{Router: "vpc"},
+			}
+			fc, err := newFakeControllerWithOptions(t, &FakeControllerOptions{
+				Subnets: []*fabricv1.Subnet{subnet}, Vpcs: []*fabricv1.Vpc{vpc},
+			})
+			require.NoError(t, err)
+			ctrl := fc.fakeController
+			require.NoError(t, ctrl.ipam.AddOrUpdateSubnet(subnet.Name, tc.cidr, tc.gateway, nil))
+			indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
+			ctrl.virtualIpsLister = fabriclisters.NewVipLister(indexer)
+			routerMAC := "02:00:00:00:00:01"
+			fc.mockOvnClient.EXPECT().GetLogicalRouterPort("vpc-tenant", false).Return(
+				&ovnnb.LogicalRouterPort{MAC: routerMAC}, nil,
+			).Times(2)
+			fc.mockOvnClient.EXPECT().SetLogicalSwitchPortArpProxyIPs("tenant-vpc", routerMAC, gomock.Any()).Return(nil).Times(2)
+			var first *fabricv1.Vip
+			for _, name := range []string{"first", "second"} {
+				vip := &fabricv1.Vip{
+					ObjectMeta: metav1.ObjectMeta{Name: name},
+					Spec:       fabricv1.VipSpec{Subnet: "tenant", Namespace: "ns", Type: util.SwitchLBRuleVip},
+				}
+				_, err := ctrl.config.FabricClient.FabricV1().Vips().Create(context.Background(), vip, metav1.CreateOptions{})
+				require.NoError(t, err)
+				require.NoError(t, indexer.Add(vip))
+				// A normal VIF creation would be an unexpected mock call.
+				fc.mockOvnClient.EXPECT().DeleteLogicalSwitchPort(name + ".ns").Return(nil)
+				require.NoError(t, ctrl.handleAddVirtualIP(name))
+				created, err := ctrl.config.FabricClient.FabricV1().Vips().Get(context.Background(), name, metav1.GetOptions{})
+				require.NoError(t, err)
+				require.Equal(t, routerMAC, created.Status.Mac)
+				require.Equal(t, routerMAC, created.Spec.MacAddress)
+				allocations := ctrl.ipam.GetPodAddress(name)
+				require.NotEmpty(t, allocations)
+				for _, allocation := range allocations {
+					require.NotEqual(t, routerMAC, allocation.Mac)
+				}
+				if first == nil {
+					first = created
+				} else {
+					require.NotEqual(t, util.GetStringIP(first.Status.V4ip, first.Status.V6ip),
+						util.GetStringIP(created.Status.V4ip, created.Status.V6ip))
+				}
+				require.NoError(t, indexer.Update(created))
+			}
+		})
+	}
+}
 
 func TestSwitchLBVipProxyIPs(t *testing.T) {
 	newVIP := func(name, subnet, kind, v4, v6 string) *fabricv1.Vip {
@@ -88,11 +150,14 @@ func TestSwitchLBVipProxyPrecedesStalePortRemoval(t *testing.T) {
 			proxy := fc.mockOvnClient.EXPECT().SetLogicalSwitchPortArpProxyIPs("tenant-vpc", "02:00:00:00:00:01", []string{"10.0.0.10", "10.0.0.11"})
 			if proxyFails {
 				proxy.Return(errors.New("database unavailable"))
-				require.Error(t, fc.fakeController.reconcileSwitchLBVipPort(vip))
+				_, err := fc.fakeController.reconcileSwitchLBVipPort(vip)
+				require.Error(t, err)
 			} else {
 				gomock.InOrder(proxy.Return(nil),
 					fc.mockOvnClient.EXPECT().DeleteLogicalSwitchPort("address.ns").Return(nil))
-				require.NoError(t, fc.fakeController.reconcileSwitchLBVipPort(vip))
+				mac, err := fc.fakeController.reconcileSwitchLBVipPort(vip)
+				require.NoError(t, err)
+				require.Equal(t, "02:00:00:00:00:01", mac)
 			}
 		})
 	}
