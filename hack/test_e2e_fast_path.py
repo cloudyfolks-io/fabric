@@ -33,11 +33,59 @@ class FastPathTest(unittest.TestCase):
         self.assertIn("go-version-file: go.mod", producer)
         self.assertIn('sha=$(git rev-parse HEAD)', producer)
         self.assertIn('go test -c -ldflags "-w -s"', producer)
+        self.assertIn("path: ${{ runner.temp }}/hosted-binaries/binaries.tar", producer)
         self.assertIn("ref: ${{ inputs.headSHA || github.sha }}", hosted)
         self.assertIn("source-sha: ${{ needs.build-e2e-binaries.outputs.hostedSourceSHA }}", hosted)
         self.assertIn("artifact-name: e2e-hosted-binaries-${{ github.run_id }}-${{ github.run_attempt }}", hosted)
         self.assertNotIn("*restore-e2e-binaries", hosted)
         self.assertIn('directory: "."', hosted)
+
+    def test_hosted_packager_round_trips_through_actual_verifier(self):
+        import os
+        import re
+        import shutil
+        import textwrap
+        if shutil.which("sha256sum") is None:
+            self.skipTest("GNU sha256sum required")
+        workflow = (ROOT / ".github/workflows/build-x86-image.yaml").read_text()
+        block = re.search(r"      - name: Package candidate-bound Hosted OVN binary\n"
+                          r"        id: hosted-source\n        run: \|\n(.*?)\n      - uses:",
+                          workflow, re.S).group(1)
+        packager = textwrap.dedent(block)
+        action = (ROOT / ".github/actions/e2e-binaries/action.yml").read_text()
+        verifier = textwrap.dedent(action.split("      run: |\n")[1])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source, runner, tools = (root / name for name in ("source", "runner", "tools"))
+            for directory in (source, runner, tools):
+                directory.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=source, check=True)
+            subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                            "commit", "--allow-empty", "-qm", "head"], cwd=source, check=True)
+            sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source).decode().strip()
+            go = tools / "go"
+            go.write_text("""#!/usr/bin/env python3
+import pathlib, sys
+target = pathlib.Path(sys.argv[sys.argv.index("-o") + 1])
+target.parent.mkdir(parents=True, exist_ok=True)
+target.write_bytes(b"hosted-fixture")
+target.chmod(0o755)
+""")
+            go.chmod(0o755)
+            env = dict(os.environ, PATH=f"{tools}:{os.environ['PATH']}",
+                       RUNNER_TEMP=str(runner), GITHUB_OUTPUT=str(root / "output"))
+            subprocess.run(["bash", "-c", packager], cwd=source, env=env, check=True)
+            archive = runner / "hosted-binaries/binaries.tar"
+            self.assertTrue(archive.is_file(), "artifact must retain the verifier's binaries.tar basename")
+            # download-artifact restores the producer's basename, not its parent.
+            download = runner / "e2e-binaries"
+            download.mkdir()
+            shutil.copy(archive, download / archive.name)
+            (source / "test/e2e/kamaji/kamaji.test").unlink()
+            env.update(SOURCE_DIR=str(source), SOURCE_SHA=sha,
+                       ARCHIVE=str(download / "binaries.tar"))
+            subprocess.run(["bash", "-c", verifier], env=env, check=True, capture_output=True)
+            self.assertTrue(os.access(source / "test/e2e/kamaji/kamaji.test", os.X_OK))
 
     def test_composite_verifier_rejects_cross_source_artifacts(self):
         import os
