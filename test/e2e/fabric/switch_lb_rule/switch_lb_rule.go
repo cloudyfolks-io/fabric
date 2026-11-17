@@ -537,7 +537,7 @@ var _ = framework.Describe("[group:slr]", func() {
 			if err != nil {
 				return false, err
 			}
-			for _, mapping := range strings.Fields(string(output)) {
+			for mapping := range strings.FieldsSeq(string(output)) {
 				if strings.Contains(mapping, util.JoinHostPort(secondVIP, epSlrFrontPort)) && strings.Contains(mapping, secondBackend) {
 					return !strings.Contains(mapping, util.JoinHostPort(pods.Items[1].Status.PodIP, backendPort)), nil
 				}
