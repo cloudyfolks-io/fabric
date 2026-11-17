@@ -58,6 +58,24 @@ func TestNatGatewayPort(t *testing.T) {
 		require.Equal(t, "lrp-uuid", gatewayPort)
 	})
 
+	t.Run("attached external subnet waits for its own lrp before selecting a gateway", func(t *testing.T) {
+		vpc := routedVpc("vpc-pending", &fabricv1.VpcDynamicRouting{Enabled: true, ExternalSubnet: "transit"})
+		fc, err := newFakeControllerWithOptions(t, &FakeControllerOptions{Vpcs: []*fabricv1.Vpc{vpc}})
+		require.NoError(t, err)
+		fc.mockOvnClient.EXPECT().GetLogicalRouterPort("vpc-pending-services", true).Return(nil, nil)
+		gatewayPort, err := fc.fakeController.natGatewayPort(vpc.Name, "services")
+		require.ErrorContains(t, err, "not ready")
+		require.Empty(t, gatewayPort)
+
+		// A retry uses the newly created services LRP, never the transit LRP.
+		fc.mockOvnClient.EXPECT().GetLogicalRouterPort("vpc-pending-services", true).Return(
+			&ovnnb.LogicalRouterPort{UUID: "services-lrp-uuid"}, nil,
+		)
+		gatewayPort, err = fc.fakeController.natGatewayPort(vpc.Name, "services")
+		require.NoError(t, err)
+		require.Equal(t, "services-lrp-uuid", gatewayPort)
+	})
+
 	t.Run("routed vpc without the lrp is retried", func(t *testing.T) {
 		vpc := routedVpc("vpc-b", &fabricv1.VpcDynamicRouting{Enabled: true, ExternalSubnet: "transit"})
 		fc, err := newFakeControllerWithOptions(t, &FakeControllerOptions{Vpcs: []*fabricv1.Vpc{vpc}})

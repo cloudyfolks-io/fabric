@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -470,6 +471,12 @@ func (c *Controller) natGatewayPort(vpcName, externalSubnet string) (string, err
 		}
 		if lrp != nil {
 			return lrp.UUID, nil
+		}
+		// Attached external legs reconcile asynchronously with NAT resources.
+		// Falling back while this LRP is pending permanently scopes its SNAT
+		// to the wrong leg, potentially conflicting with public-pool SNAT.
+		if slices.Contains(vpc.Spec.ExtraExternalSubnets, externalSubnet) {
+			return "", fmt.Errorf("gateway port %s-%s is not ready", vpc.Name, externalSubnet)
 		}
 	}
 	lrpName := fmt.Sprintf("%s-%s", vpc.Name, routing.ExternalSubnet)
