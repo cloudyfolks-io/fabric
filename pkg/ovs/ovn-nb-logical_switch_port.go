@@ -377,9 +377,18 @@ func (c *OVNNbClient) SetLogicalSwitchPortArpProxy(lspName string, enableArpProx
 	return c.setLogicalSwitchPortArpProxy(lspName, value)
 }
 
-// Router ports accept an address list, not the boolean VIF-port proxy option.
-func (c *OVNNbClient) SetLogicalSwitchPortArpProxyIPs(lspName string, ips []string) error {
-	return c.setLogicalSwitchPortArpProxy(lspName, strings.Join(ips, " "))
+// Router ports accept "MAC IP..." rather than the boolean VIF-port option.
+// Include the MAC explicitly: OVN's MAC-first parser can consume an IPv6
+// address with six or more uncompressed hextets as a MAC and lose its IPs.
+func (c *OVNNbClient) SetLogicalSwitchPortArpProxyIPs(lspName, mac string, ips []string) error {
+	value := ""
+	if len(ips) != 0 {
+		if mac == "" {
+			return errors.New("VIP proxy addresses require a router MAC")
+		}
+		value = mac + " " + strings.Join(ips, " ")
+	}
+	return c.setLogicalSwitchPortArpProxy(lspName, value)
 }
 
 func (c *OVNNbClient) setLogicalSwitchPortArpProxy(lspName, value string) error {
