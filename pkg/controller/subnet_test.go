@@ -110,6 +110,81 @@ func Test_readyToRemoveFinalizer(t *testing.T) {
 	}
 }
 
+func TestDefaultVpcVlanRoutePreservesExplicitExternalConnection(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		vpc        *fabricv1.Vpc
+		wantDelete bool
+		wantError  bool
+	}{
+		{
+			name: "enabled explicit external subnet retains both ports",
+			vpc: &fabricv1.Vpc{Spec: fabricv1.VpcSpec{
+				EnableExternal: true, ExtraExternalSubnets: []string{"services"},
+			}},
+		},
+		{
+			name: "disabled external connection retains ordinary VLAN cleanup",
+			vpc: &fabricv1.Vpc{Spec: fabricv1.VpcSpec{
+				ExtraExternalSubnets: []string{"services"},
+			}},
+			wantDelete: true,
+		},
+		{
+			name: "another external subnet does not protect this VLAN port",
+			vpc: &fabricv1.Vpc{Spec: fabricv1.VpcSpec{
+				EnableExternal: true, ExtraExternalSubnets: []string{"transit"},
+			}},
+			wantDelete: true,
+		},
+		{
+			name: "stale observed status cannot retain a removed connection",
+			vpc: &fabricv1.Vpc{
+				Spec: fabricv1.VpcSpec{EnableExternal: true},
+				Status: fabricv1.VpcStatus{
+					EnableExternal: true, ExtraExternalSubnets: []string{"services"},
+				},
+			},
+			wantDelete: true,
+		},
+		{
+			name:      "unknown default VPC fails before deleting either port",
+			wantError: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			options := &FakeControllerOptions{}
+			if tc.vpc != nil {
+				tc.vpc.Name = util.DefaultVpc
+				options.Vpcs = []*fabricv1.Vpc{tc.vpc}
+			}
+			fc, err := newFakeControllerWithOptions(t, options)
+			require.NoError(t, err)
+			fc.fakeController.config.ExternalGatewaySwitch = "external"
+			subnet := &fabricv1.Subnet{
+				ObjectMeta: metav1.ObjectMeta{Name: "services"},
+				Spec: fabricv1.SubnetSpec{
+					Vpc: util.DefaultVpc, Vlan: "services-vlan", CIDRBlock: "100.66.0.0/15",
+				},
+			}
+			if tc.wantDelete {
+				fc.mockOvnClient.EXPECT().DeleteLogicalSwitchPort("services-" + util.DefaultVpc).Return(nil)
+				fc.mockOvnClient.EXPECT().DeleteLogicalRouterPort(util.DefaultVpc + "-services").Return(nil)
+			}
+			if !tc.wantError {
+				// U2O cleanup still runs, but no router exists in this fixture.
+				fc.mockOvnClient.EXPECT().GetLogicalRouter(util.DefaultVpc, true).Return(nil, nil).Times(2)
+			}
+			err = fc.fakeController.reconcileOvnDefaultVpcRoute(subnet)
+			if tc.wantError {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
 func TestAddPolicyRouteForU2OInterconn_OverlayOnlyRouting(t *testing.T) {
 	t.Parallel()
 
