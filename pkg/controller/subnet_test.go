@@ -110,6 +110,61 @@ func Test_readyToRemoveFinalizer(t *testing.T) {
 	}
 }
 
+func TestDefaultVpcExternalSwitchPreservesVpcOwnedPorts(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		vpcName    string
+		enabled    bool
+		external   []string
+		needRouter bool
+		wantBare   bool
+		wantError  bool
+	}{
+		{name: "explicit physical-gateway external leg", vpcName: util.DefaultVpc, enabled: true, external: []string{"services"}, wantBare: true},
+		{name: "missing external leg is not resurrected", vpcName: util.DefaultVpc, enabled: true, external: []string{"services"}, wantBare: true},
+		{name: "ordinary VLAN cleanup", vpcName: util.DefaultVpc},
+		{name: "disabled desired external connection", vpcName: util.DefaultVpc, external: []string{"services"}},
+		{name: "different desired external subnet", vpcName: util.DefaultVpc, enabled: true, external: []string{"transit"}},
+		{name: "custom VPC behavior is unchanged", vpcName: "tenant-vpc", enabled: true, external: []string{"services"}},
+		{name: "logical gateway behavior is unchanged", vpcName: util.DefaultVpc, enabled: true, external: []string{"services"}, needRouter: true},
+		{name: "bare switch errors propagate", vpcName: util.DefaultVpc, enabled: true, external: []string{"services"}, wantBare: true, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fc, err := newFakeControllerWithOptions(t, nil)
+			require.NoError(t, err)
+			subnet := &fabricv1.Subnet{
+				ObjectMeta: metav1.ObjectMeta{Name: "services"},
+				Spec:       fabricv1.SubnetSpec{Vpc: tc.vpcName, Vlan: "services-vlan", CIDRBlock: "100.66.0.0/15"},
+			}
+			vpc := &fabricv1.Vpc{
+				ObjectMeta: metav1.ObjectMeta{Name: tc.vpcName},
+				Spec:       fabricv1.VpcSpec{EnableExternal: tc.enabled, ExtraExternalSubnets: tc.external},
+				Status:     fabricv1.VpcStatus{Router: tc.vpcName, EnableExternal: true, ExtraExternalSubnets: []string{"services"}},
+			}
+			var response error
+			if tc.wantError {
+				response = errors.New("database unavailable")
+			}
+			if tc.wantBare {
+				// No router-port create/update/delete call is allowed. In
+				// particular the external .1 gateway must not replace the
+				// VPC allocation .1.3, nor recreate an absent external leg.
+				fc.mockOvnClient.EXPECT().CreateBareLogicalSwitch("services").Return(response)
+			} else {
+				fc.mockOvnClient.EXPECT().CreateLogicalSwitch(
+					"services", tc.vpcName, "100.66.0.0/15", "100.66.0.1", "", tc.needRouter, false,
+				).Return(nil)
+			}
+			err = fc.fakeController.reconcileSubnetLogicalSwitch(subnet, vpc, "100.66.0.1", "", tc.needRouter, false)
+			if tc.wantError {
+				require.ErrorIs(t, err, response)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
 func TestDefaultVpcVlanRoutePreservesExplicitExternalConnection(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
