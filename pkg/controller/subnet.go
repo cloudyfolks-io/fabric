@@ -661,7 +661,7 @@ func (c *Controller) handleAddOrUpdateSubnet(key string) error {
 			return err
 		}
 
-		if err := c.OVNNbClient.CreateLogicalSwitch(subnet.Name, vpc.Status.Router, subnet.Spec.CIDRBlock, gateway, gatewayMAC, needRouter, randomAllocateGW); err != nil {
+		if err := c.reconcileSubnetLogicalSwitch(subnet, vpc, gateway, gatewayMAC, needRouter, randomAllocateGW); err != nil {
 			klog.Errorf("create logical switch %s: %v", subnet.Name, err)
 			return err
 		}
@@ -792,6 +792,18 @@ func (c *Controller) handleAddOrUpdateSubnet(key string) error {
 	c.enqueueDNSZonesForVpc(subnet.Spec.Vpc)
 
 	return nil
+}
+
+func (c *Controller) reconcileSubnetLogicalSwitch(subnet *fabricv1.Subnet, vpc *fabricv1.Vpc, gateway, gatewayMAC string, needRouter, randomAllocateGW bool) error {
+	// Physical-gateway external ports belong to VPC reconciliation. The
+	// ordinary switch helper would first overwrite their allocated network
+	// with the subnet gateway, then remove them because needRouter is false.
+	// Ensure only the switch: do not recreate a deliberately removed port.
+	if !needRouter && vpc.Name == c.config.ClusterRouter &&
+		vpc.Spec.EnableExternal && slices.Contains(vpc.Spec.ExtraExternalSubnets, subnet.Name) {
+		return c.OVNNbClient.CreateBareLogicalSwitch(subnet.Name)
+	}
+	return c.OVNNbClient.CreateLogicalSwitch(subnet.Name, vpc.Status.Router, subnet.Spec.CIDRBlock, gateway, gatewayMAC, needRouter, randomAllocateGW)
 }
 
 func (c *Controller) handleDeleteLogicalSwitch(key string) (err error) {
