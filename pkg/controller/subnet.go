@@ -1578,17 +1578,27 @@ func (c *Controller) reconcileOvnDefaultVpcRoute(subnet *fabricv1.Subnet) error 
 		}
 
 		if !subnet.Spec.LogicalGateway && subnet.Name != c.config.ExternalGatewaySwitch && !subnet.Spec.U2OInterconnection {
-			lspName := fmt.Sprintf("%s-%s", subnet.Name, c.config.ClusterRouter)
-			klog.Infof("delete logical switch port %s", lspName)
-			if err := c.OVNNbClient.DeleteLogicalSwitchPort(lspName); err != nil {
-				klog.Errorf("failed to delete lsp %s-%s, %v", subnet.Name, c.config.ClusterRouter, err)
+			vpc, err := c.vpcsLister.Get(c.config.ClusterRouter)
+			if err != nil {
+				klog.Errorf("failed to read default vpc before reconciling subnet %s: %v", subnet.Name, err)
 				return err
 			}
-			lrpName := fmt.Sprintf("%s-%s", c.config.ClusterRouter, subnet.Name)
-			klog.Infof("delete logical router port %s", lrpName)
-			if err := c.OVNNbClient.DeleteLogicalRouterPort(lrpName); err != nil {
-				klog.Errorf("failed to delete lrp %s: %v", lrpName, err)
-				return err
+			// A physical-gateway VLAN can still be an explicit external leg
+			// of the default VPC. Its ports belong to VPC reconciliation,
+			// not to ordinary underlay subnet route cleanup.
+			if !vpc.Spec.EnableExternal || !slices.Contains(vpc.Spec.ExtraExternalSubnets, subnet.Name) {
+				lspName := fmt.Sprintf("%s-%s", subnet.Name, c.config.ClusterRouter)
+				klog.Infof("delete logical switch port %s", lspName)
+				if err := c.OVNNbClient.DeleteLogicalSwitchPort(lspName); err != nil {
+					klog.Errorf("failed to delete lsp %s-%s, %v", subnet.Name, c.config.ClusterRouter, err)
+					return err
+				}
+				lrpName := fmt.Sprintf("%s-%s", c.config.ClusterRouter, subnet.Name)
+				klog.Infof("delete logical router port %s", lrpName)
+				if err := c.OVNNbClient.DeleteLogicalRouterPort(lrpName); err != nil {
+					klog.Errorf("failed to delete lrp %s: %v", lrpName, err)
+					return err
+				}
 			}
 		}
 
