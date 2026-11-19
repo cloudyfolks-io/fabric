@@ -127,6 +127,13 @@ func (c *Controller) handleUpdateEndpointSlice(key string) error {
 
 	annotationVips := serviceAnnotationVips(svc)
 	lbVips := getVipIps(svc)
+	if c.ovnLbSvcEnabled() && isOvnLbSvc(svc, c.config.DefaultLoadBalancerClass) {
+		annotationVips = splitAnnotationIPs(svc.Annotations[util.RouterLBRuleVipsAnnotation])
+		clusterIPs := util.ServiceClusterIPs(*svc)
+		lbVips = slices.DeleteFunc(lbVips, func(ip string) bool {
+			return !slices.Contains(annotationVips, ip) && !slices.Contains(clusterIPs, ip)
+		})
+	}
 	if len(lbVips) == 0 {
 		return nil
 	}
