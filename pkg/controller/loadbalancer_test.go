@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	fabricv1 "github.com/cloudyfolks-io/fabric/pkg/apis/fabric/v1"
 	"github.com/cloudyfolks-io/fabric/pkg/util"
@@ -23,7 +24,7 @@ func makeUnifiedLBEip(name, v4ip, specType, externalSubnet string) *fabricv1.Ovn
 
 func makeUnifiedLB(name string, frontend fabricv1.LoadBalancerFrontend) *fabricv1.LoadBalancer {
 	return &fabricv1.LoadBalancer{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
+		ObjectMeta: metav1.ObjectMeta{Name: name, UID: types.UID(name)},
 		Spec: fabricv1.LoadBalancerSpec{
 			Vpc:       "vpc1",
 			Frontend:  frontend,
@@ -69,6 +70,20 @@ func TestLoadBalancer_VipFrontendWithoutVpcDeclaresNoRouter(t *testing.T) {
 	child, err := fc.fakeController.config.FabricClient.FabricV1().SwitchLBRules().Get(context.Background(), "flb-lb-novpc", metav1.GetOptions{})
 	require.NoError(t, err)
 	assert.Empty(t, child.Annotations)
+}
+
+func TestLoadBalancerForwardsTheHealthCheckSetting(t *testing.T) {
+	lb := makeUnifiedLB("lb1", fabricv1.LoadBalancerFrontend{Vip: "100.69.0.10"})
+	lb.Annotations = map[string]string{util.ServiceHealthCheck: "false"}
+	fc, err := newFakeControllerWithOptions(t, &FakeControllerOptions{LoadBalancers: []*fabricv1.LoadBalancer{lb}})
+	require.NoError(t, err)
+	require.NoError(t, fc.fakeController.handleAddOrUpdateLoadBalancer("lb1"))
+	child, err := fc.fakeController.config.FabricClient.FabricV1().SwitchLBRules().Get(context.Background(), "flb-lb1", metav1.GetOptions{})
+	require.NoError(t, err)
+	service := generateHeadlessService(child, nil)
+	require.Equal(t, "false", service.Annotations[util.ServiceHealthCheck])
+	delete(child.Annotations, util.ServiceHealthCheck)
+	require.Empty(t, generateHeadlessService(child, service).Annotations[util.ServiceHealthCheck])
 }
 
 func TestLoadBalancer_EipFrontendTranslatesToRouterRule(t *testing.T) {
@@ -145,7 +160,39 @@ func TestLoadBalancer_DeleteRemovesTheChildren(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NoError(t, fc.fakeController.handleAddOrUpdateLoadBalancer("lb5"))
-	require.NoError(t, fc.fakeController.handleDelLoadBalancer("lb5"))
+	require.NoError(t, fc.fakeController.handleDelLoadBalancer(loadBalancerDeletion{Name: lb.Name, UID: lb.UID}))
 	_, err = fc.fakeController.config.FabricClient.FabricV1().RouterLBRules().Get(context.Background(), "flb-lb5", metav1.GetOptions{})
 	assert.Error(t, err)
+}
+
+func TestLoadBalancerAdoptsLegacyChild(t *testing.T) {
+	lb := makeUnifiedLB("database", fabricv1.LoadBalancerFrontend{Vip: "100.69.0.10"})
+	fc, err := newFakeControllerWithOptions(t, &FakeControllerOptions{LoadBalancers: []*fabricv1.LoadBalancer{lb}})
+	require.NoError(t, err)
+	ctx := context.Background()
+	rules := fc.fakeController.config.FabricClient.FabricV1().SwitchLBRules()
+	name := lbChildName(lb.Name)
+	_, err = rules.Create(ctx, &fabricv1.SwitchLBRule{ObjectMeta: metav1.ObjectMeta{
+		Name: name, Labels: map[string]string{util.LoadBalancerOwnerLabel: lb.Name},
+	}}, metav1.CreateOptions{})
+	require.NoError(t, err)
+
+	require.NoError(t, fc.fakeController.handleAddOrUpdateLoadBalancer(lb.Name))
+	child, err := rules.Get(ctx, name, metav1.GetOptions{})
+	require.NoError(t, err)
+	require.Equal(t, lb.UID, metav1.GetControllerOf(child).UID)
+	require.Equal(t, lb.Spec.Frontend.Vip, child.Spec.Vip)
+}
+
+func TestLoadBalancerDeletionKeepsReplacementChild(t *testing.T) {
+	lb := makeUnifiedLB("database", fabricv1.LoadBalancerFrontend{Vip: "100.69.0.10"})
+	fc, err := newFakeControllerWithOptions(t, &FakeControllerOptions{LoadBalancers: []*fabricv1.LoadBalancer{lb}})
+	require.NoError(t, err)
+	require.NoError(t, fc.fakeController.handleAddOrUpdateLoadBalancer(lb.Name))
+
+	require.NoError(t, fc.fakeController.handleDelLoadBalancer(loadBalancerDeletion{Name: lb.Name, UID: "previous-uid"}))
+	rules := fc.fakeController.config.FabricClient.FabricV1().SwitchLBRules()
+	child, err := rules.Get(context.Background(), lbChildName(lb.Name), metav1.GetOptions{})
+	require.NoError(t, err)
+	require.Equal(t, lb.UID, metav1.GetControllerOf(child).UID)
 }

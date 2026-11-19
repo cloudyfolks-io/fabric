@@ -107,7 +107,7 @@ type Controller struct {
 	loadBalancerLister      fabriclister.LoadBalancerLister
 	loadBalancerSynced      cache.InformerSynced
 	addLoadBalancerQueue    workqueue.TypedRateLimitingInterface[string]
-	delLoadBalancerQueue    workqueue.TypedRateLimitingInterface[string]
+	delLoadBalancerQueue    workqueue.TypedRateLimitingInterface[loadBalancerDeletion]
 	addRouterLBRuleQueue    workqueue.TypedRateLimitingInterface[string]
 	updateRouterLBRuleQueue workqueue.TypedRateLimitingInterface[*RouterLBRuleInfo]
 	delRouterLBRuleQueue    workqueue.TypedRateLimitingInterface[*RouterLBRuleInfo]
@@ -565,7 +565,7 @@ func Run(ctx context.Context, config *Configuration) {
 		controller.loadBalancerLister = loadBalancerInformer.Lister()
 		controller.loadBalancerSynced = loadBalancerInformer.Informer().HasSynced
 		controller.addLoadBalancerQueue = newTypedRateLimitingQueue("AddLoadBalancer", custCrdRateLimiter)
-		controller.delLoadBalancerQueue = newTypedRateLimitingQueue[string]("DeleteLoadBalancer", nil)
+		controller.delLoadBalancerQueue = newTypedRateLimitingQueue[loadBalancerDeletion]("DeleteLoadBalancer", nil)
 		controller.addRouterLBRuleQueue = newTypedRateLimitingQueue("AddRouterLBRule", custCrdRateLimiter)
 		controller.delRouterLBRuleQueue = newTypedRateLimitingQueue(
 			"DeleteRouterLBRule",

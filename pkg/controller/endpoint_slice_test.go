@@ -1064,3 +1064,18 @@ func TestSecondaryAddressMovesLoadBalancerToTheSecondaryVpc(t *testing.T) {
 	backends := ctrl.getEndpointBackend(slices, corev1.ServicePort{Name: "http"}, "192.168.1.100")
 	assert.Equal(t, []string{"192.168.1.10:80"}, backends)
 }
+
+func TestStaticSwitchLoadBalancerKeepsItsDeclaredVPC(t *testing.T) {
+	fc, err := newFakeControllerWithOptions(t, twoInterfaceTestOptions(twoInterfacePod("192.168.1.10")))
+	require.NoError(t, err)
+	svc := twoInterfaceService(map[string]string{
+		util.LogicalRouterAnnotation:    "tenant-vpc",
+		util.SwitchLBRuleVipsAnnotation: "100.69.0.10",
+	}, map[string]string{"app": "db"})
+	vpcName, _, err := fc.fakeController.getVpcAndSubnetForEndpoints(nil, svc)
+	require.NoError(t, err)
+	require.Equal(t, "tenant-vpc", vpcName)
+	slices := []*discoveryv1.EndpointSlice{twoInterfaceSlice(discoveryv1.AddressTypeIPv4, "10.244.0.5")}
+	_, _, err = fc.fakeController.getVpcAndSubnetForEndpoints(slices, svc)
+	require.ErrorContains(t, err, "differs from its declared VPC")
+}

@@ -132,6 +132,12 @@ func (c *Controller) enqueueUpdateService(oldObj, newObj any) {
 		return
 	}
 
+	key := cache.MetaObjectToName(newSvc).String()
+	if newSvc.Annotations[util.SwitchLBRuleVipsAnnotation] != "" &&
+		serviceHealthChecksDisabled(oldSvc) != serviceHealthChecksDisabled(newSvc) {
+		c.addOrUpdateEndpointSliceQueue.Add(key)
+	}
+
 	oldClusterIps := getVipIps(oldSvc)
 	newClusterIps := getVipIps(newSvc)
 
@@ -150,7 +156,6 @@ func (c *Controller) enqueueUpdateService(oldObj, newObj any) {
 		}
 	}
 
-	key := cache.MetaObjectToName(newSvc).String()
 	klog.V(3).Infof("enqueue update service %s", key)
 	if len(ipsToDel) != 0 {
 		ipsToDelStr := strings.Join(ipsToDel, ",")

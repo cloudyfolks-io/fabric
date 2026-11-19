@@ -126,6 +126,7 @@ func (c *Controller) handleUpdateEndpointSlice(key string) error {
 	)
 
 	annotationVips := serviceAnnotationVips(svc)
+	cleanDisabledHealthCheck := serviceHealthChecksDisabled(svc) && svc.Annotations[util.SwitchLBRuleVipsAnnotation] != ""
 	lbVips := getVipIps(svc)
 	if c.ovnLbSvcEnabled() && isOvnLbSvc(svc, c.config.DefaultLoadBalancerClass) {
 		annotationVips = splitAnnotationIPs(svc.Annotations[util.RouterLBRuleVipsAnnotation])
@@ -253,6 +254,14 @@ func (c *Controller) handleUpdateEndpointSlice(key string) error {
 				if err = c.OVNNbClient.LoadBalancerAddVip(lb, vip, backends...); err != nil {
 					klog.Errorf("failed to add vip %s with backends %s to LB %s: %v", lbVip, backends, lb, err)
 					return err
+				}
+				if cleanDisabledHealthCheck && !isPreferLocalBackend && slices.Contains(annotationVips, lbVip) {
+					if err = c.OVNNbClient.DeleteLoadBalancerHealthCheck(lb, vip); err != nil {
+						return err
+					}
+					if err = c.OVNNbClient.LoadBalancerDeleteIPPortMapping(lb, vip); err != nil {
+						return err
+					}
 				}
 				if isPreferLocalBackend &&
 					svc.Spec.Type == v1.ServiceTypeLoadBalancer &&
@@ -609,9 +618,9 @@ func (c *Controller) getDefaultVpcAndSubnet(service *v1.Service, vpcName, subnet
 }
 
 func (c *Controller) getVpcAndSubnetForEndpoints(endpointSlices []*discoveryv1.EndpointSlice, service *v1.Service) (vpcName, subnetName string, err error) {
-	vpcName, subnetName = getCustomServiceVpcAndSubnet(service)
-	if vpcName != "" && subnetName != "" {
-		return vpcName, subnetName, nil
+	declaredVPC, declaredSubnet := getCustomServiceVpcAndSubnet(service)
+	if declaredVPC != "" && declaredSubnet != "" {
+		return declaredVPC, declaredSubnet, nil
 	}
 
 	if serviceHasSelector(service) {
@@ -627,6 +636,15 @@ func (c *Controller) getVpcAndSubnetForEndpoints(endpointSlices []*discoveryv1.E
 		vpcName, subnetName = c.findVpcAndSubnetWithNoTargets(endpointSlices, pods)
 	}
 
+	if declaredVPC != "" && service.Annotations[util.SwitchLBRuleVipsAnnotation] != "" {
+		if vpcName != "" && vpcName != declaredVPC {
+			return "", "", fmt.Errorf("the Service backend VPC differs from its declared VPC")
+		}
+		vpcName = declaredVPC
+	}
+	if declaredSubnet != "" {
+		subnetName = declaredSubnet
+	}
 	vpcName, subnetName = c.getDefaultVpcAndSubnet(service, vpcName, subnetName)
 	return vpcName, subnetName, nil
 }
