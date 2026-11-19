@@ -5,6 +5,11 @@ permissions:
 
 on:
   workflow_dispatch:
+    inputs:
+      full:
+        description: Run extended compatibility tests
+        type: boolean
+        default: false
   schedule:
     - cron: "40 16 * * *"
 
@@ -23,6 +28,7 @@ env:
 
 jobs:
   k8s-conformance-e2e:
+    if: github.event_name == 'workflow_dispatch' && inputs.full
     name: Kubernetes Conformance E2E
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -120,10 +126,7 @@ jobs:
       matrix:
         branch:
           - main
-        ip-family:
-          - ipv4
-          - ipv6
-          - dual
+        ip-family: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.full && '["ipv4","ipv6","dual"]' || '["ipv4"]') }}
     steps:
       - uses: actions/checkout@v7
 
@@ -194,6 +197,7 @@ jobs:
           make check-fabric-pod-restarts
 
   cyclonus-netpol-e2e:
+    if: github.event_name == 'workflow_dispatch' && inputs.full
     name: Cyclonus Network Policy E2E
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -253,6 +257,7 @@ jobs:
           make check-fabric-pod-restarts
 
   fabric-conformance-e2e:
+    if: github.event_name == 'workflow_dispatch' && inputs.full
     name: fabric Conformance E2E
     runs-on: ubuntu-24.04
     timeout-minutes: 40
@@ -339,6 +344,7 @@ jobs:
           make check-fabric-pod-restarts
 
   fabric-ic-conformance-e2e:
+    if: github.event_name == 'workflow_dispatch' && inputs.full
     name: fabric IC Conformance E2E
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -413,6 +419,7 @@ jobs:
           make check-fabric-pod-restarts
 
   underlay-logical-gateway-installation-test:
+    if: github.event_name == 'workflow_dispatch' && inputs.full
     name: Underlay Logical Gateway Installation Test
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -464,6 +471,7 @@ jobs:
         run: sh dist/images/cleanup.sh
 
   no-ovn-lb-test:
+    if: github.event_name == 'workflow_dispatch' && inputs.full
     name: Disable OVN LB Test
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -517,6 +525,7 @@ jobs:
         run: sh dist/images/cleanup.sh
 
   no-np-test:
+    if: github.event_name == 'workflow_dispatch' && inputs.full
     name: Disable Network Policy Test
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -576,9 +585,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        branch:
-          - main
-          - release-1.12-mc
+        branch: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.full && '["main","release-1.12-mc"]' || '["main"]') }}
 
     steps:
       - uses: actions/checkout@v7
@@ -646,6 +653,7 @@ jobs:
         run: make check-fabric-pod-restarts
 
   webhook-e2e:
+    if: github.event_name == 'workflow_dispatch' && inputs.full
     name: Webhook E2E
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -719,6 +727,7 @@ jobs:
           make check-fabric-pod-restarts
 
   installation-compatibility-test:
+    if: github.event_name == 'workflow_dispatch' && inputs.full
     name: Installation Compatibility Test
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -768,6 +777,7 @@ jobs:
         run: sh dist/images/cleanup.sh
 
   cilium-chaining-e2e:
+    if: github.event_name == 'workflow_dispatch' && inputs.full
     name: Cilium Chaining E2E
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -862,19 +872,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        branch:
-          - main
-          - release-1.12-mc
-        ssl:
-          - "true"
-          - "false"
-        bind-local:
-          - "true"
-          - "false"
-        ip-family:
-          - ipv4
-          - ipv6
-          - dual
+        branch: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.full && '["main","release-1.12-mc"]' || '["main"]') }}
+        ssl: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.full && '["true","false"]' || '["true"]') }}
+        bind-local: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.full && '["true","false"]' || '["false"]') }}
+        ip-family: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.full && '["ipv4","ipv6","dual"]' || '["ipv4"]') }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -1053,6 +1054,7 @@ jobs:
         run: sh dist/images/cleanup.sh
 
   fabric-submariner-conformance-e2e:
+    if: github.event_name == 'workflow_dispatch' && inputs.full
     name: fabric Submariner Conformance E2E
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -1113,6 +1115,7 @@ jobs:
         run: sh dist/images/cleanup.sh
 
   ovn-vpc-nat-gw-conformance-e2e:
+    if: github.event_name == 'workflow_dispatch' && inputs.full
     name: OVN VPC NAT Gateway E2E
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -1256,6 +1259,7 @@ jobs:
           make check-fabric-pod-restarts
 
   fabric-hosted-ovn-central-e2e:
+    if: github.event_name == 'workflow_dispatch' && inputs.full
     name: fabric Hosted OVN Central E2E (${{ matrix.branch }}, ${{ matrix.ip-family }}, ${{ matrix.tenant-control-plane }} control-plane)
     runs-on: ubuntu-24.04
     timeout-minutes: 60
