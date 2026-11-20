@@ -39,19 +39,18 @@ import (
 )
 
 const (
-	frrImage          = "quay.io/frrouting/frr:10.7.0"
-	localASN          = 65002
-	peerASN           = 65001
-	vrfName           = "ovnvrf1001"
-	vrfID             = 1001
-	agentVrfName      = "ovnvrf1002"
-	agentVrfID        = 1002
-	lbVrfName         = "ovnvrf1004"
-	lbVrfID           = 1004
-	lbPoolCIDR        = "203.0.113.0/24"
-	remoteLoopbackIP  = "198.51.100.1"
-	dockerNetworkName = "fabric-dynamic-routing"
-	chassisContainer  = "container"
+	frrImage         = "quay.io/frrouting/frr:10.7.0"
+	localASN         = 65002
+	peerASN          = 65001
+	vrfName          = "ovnvrf1001"
+	vrfID            = 1001
+	agentVrfName     = "ovnvrf1002"
+	agentVrfID       = 1002
+	lbVrfName        = "ovnvrf1004"
+	lbVrfID          = 1004
+	lbPoolCIDR       = "203.0.113.0/24"
+	remoteLoopbackIP = "198.51.100.1"
+	chassisContainer = "container"
 )
 
 func init() {
@@ -696,6 +695,7 @@ func setupTopology(f *framework.Framework, gwNodeCount int) *drTopology {
 	vlanClient := f.VlanClient()
 	providerNetworkClient := f.ProviderNetworkClient()
 
+	dockerNetworkName := clusterName + "-dynamic-routing"
 	ginkgo.By("Ensuring docker network " + dockerNetworkName + " exists")
 	network, err := docker.NetworkCreate(dockerNetworkName, true, true)
 	framework.ExpectNoError(err, "creating docker network "+dockerNetworkName)
