@@ -253,6 +253,9 @@ ip protocol bgp route-map OVN-NO-FIB
 		}
 
 		topo := setupTopology(f, 2)
+		if len(topo.gwNodeNames) < 2 {
+			ginkgo.Skip("gateway failover requires two gateway nodes")
+		}
 		w := setupVpcWorkload(f, topo, "vpc-"+framework.RandomSuffix(), agentVrfName, agentVrfID, false, framework.RandomCIDR(f.ClusterIPFamily), "", []apiv1.RedistributeType{apiv1.RedistributeNAT})
 		deployAgent(f, topo)
 
@@ -294,10 +297,11 @@ ip protocol bgp route-map OVN-NO-FIB
 					standbyName = gwName
 				}
 			}
-			return activeName != "", nil
-		}, "one gateway chassis holds the EIP route in the VPC table")
+			return activeName != "" && standbyName != "", nil
+		}, "one gateway chassis holds the EIP route and the other is on standby")
 		framework.Logf("active chassis: %s, standby chassis: %s", activeName, standbyName)
 		activeNode := nodeByName[activeName]
+		standbyNode := nodeByName[standbyName]
 
 		ginkgo.By("Routing the fabric loopback " + remoteLoopbackIP + " through the ToR")
 		setVpcStaticRoutes(f, w.vpcName, []*apiv1.StaticRoute{{
@@ -316,21 +320,16 @@ ip protocol bgp route-map OVN-NO-FIB
 			return strings.Contains(output, " 0% packet loss"), nil
 		}, "workload pod reaches the fabric loopback and the reply follows the advertised EIP route")
 
-		if standbyName != "" {
-			standbyNode := nodeByName[standbyName]
+		ginkgo.By("Taking the external gateway label off " + activeNode.Name())
+		failOverGatewayNode(f, topo, []string{w.vpcName}, activeNode.Name())
 
-			ginkgo.By("Taking the external gateway label off " + activeNode.Name())
-			failOverGatewayNode(f, topo, []string{w.vpcName}, activeNode.Name())
+		ginkgo.By("Verifying the routes move to " + standbyNode.Name())
+		framework.WaitUntil(2*time.Second, 2*time.Minute, func(_ context.Context) (bool, error) {
+			return strings.Contains(nodeTableRoutes(topo, standbyNode.Name(), w.tableID), w.eipV4), nil
+		}, "advertised route mirrored on the standby chassis")
 
-			ginkgo.By("Verifying the routes move to " + standbyNode.Name())
-			framework.WaitUntil(2*time.Second, 2*time.Minute, func(_ context.Context) (bool, error) {
-				return strings.Contains(nodeTableRoutes(topo, standbyNode.Name(), w.tableID), w.eipV4), nil
-			}, "advertised route mirrored on the standby chassis")
-
-			ginkgo.By("Verifying the ToR keeps the EIP through the failover")
-			waitTorLearnsEip(topo, w)
-
-		}
+		ginkgo.By("Verifying the ToR keeps the EIP through the failover")
+		waitTorLearnsEip(topo, w)
 
 		deleteNatAndVerifyWithdrawal(f, topo, w, nil)
 	})
