@@ -4,14 +4,10 @@ ARG BASE_TAG=$VERSION
 ARG BASE_IMAGE=ghcr.io/cloudyfolks-io/fabric-base
 FROM $BASE_IMAGE:$BASE_TAG AS setcap
 
-COPY *.sh /fabric/
-COPY kubectl-ko /fabric/kubectl-ko
-COPY 01-fabric.conflist /fabric/01-fabric.conflist
+COPY --chmod=0755 *.sh kubectl-ko /fabric/
+COPY --chmod=0644 01-fabric.conflist /fabric/01-fabric.conflist
 
-COPY fabric /fabric/fabric
-COPY fabric-cmd /fabric/fabric-cmd
-COPY fabric-daemon /fabric/fabric-daemon
-COPY fabric-controller /fabric/fabric-controller
+COPY --chmod=0755 fabric fabric-cmd fabric-daemon fabric-controller /fabric/
 RUN ln -s /fabric/fabric-cmd /fabric/fabric-monitor && \
     ln -s /fabric/fabric-cmd /fabric/fabric-webhook && \
     ln -s /fabric/fabric-cmd /fabric/fabric-leader-checker && \
@@ -25,7 +21,7 @@ RUN ln -s /fabric/fabric-cmd /fabric/fabric-monitor && \
 FROM $BASE_IMAGE:$BASE_TAG
 
 COPY --chmod=0644 logrotate/* /etc/logrotate.d/
-COPY grace_stop_ovn_controller /usr/share/ovn/scripts/grace_stop_ovn_controller
+COPY --chmod=0755 grace_stop_ovn_controller /usr/share/ovn/scripts/grace_stop_ovn_controller
 
 COPY --from=setcap /fabric /fabric
 RUN /fabric/iptables-wrapper-installer.sh --no-sanity-check && \
