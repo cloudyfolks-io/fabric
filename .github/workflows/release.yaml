@@ -186,6 +186,9 @@ jobs:
     name: Build and push images
     needs: base-manifests
     runs-on: ubuntu-24.04
+    outputs:
+      digest: ${{ steps.index.outputs.digest }}
+      revision: ${{ steps.index.outputs.revision }}
     steps:
       - uses: actions/checkout@v6
 
@@ -206,12 +209,20 @@ jobs:
 
       - name: Set release tag
         run: |
+          revision=$(git rev-parse --verify 'HEAD^{commit}')
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
           if [ "${{ github.event_name }}" = "push" ]; then
-            echo "TAG=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+            tag="$GITHUB_REF_NAME"
+            if [ "$tag" != "$(cat VERSION)" ]; then
+              printf 'The Git tag must match VERSION\n' >&2
+              exit 1
+            fi
           else
-            echo "TAG=dev-$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
+            tag="dev-$(git rev-parse --short HEAD)"
           fi
-          echo "BASE_TAG=$(cat BASE_VERSION)" >> "$GITHUB_ENV"
+          base_tag=$(cat BASE_VERSION)
+          base_digest=$(docker buildx imagetools inspect --format '{{json .Manifest}}' "$REGISTRY/fabric-base:$base_tag" | jq -er '.digest | select(test("^sha256:[0-9a-f]{64}$"))')
+          printf 'TAG=%s\nBASE_TAG=%s@%s\nSOURCE_REVISION=%s\n' "$tag" "$base_tag" "$base_digest" "$revision" >> "$GITHUB_ENV"
 
       - name: Build amd64 binaries
         run: make build-go
@@ -220,6 +231,8 @@ jobs:
         run: |
           docker buildx build --platform linux/amd64 --push \
             -t "$REGISTRY/fabric:$TAG-amd64" \
+            --metadata-file "$RUNNER_TEMP/fabric-amd64-build.json" \
+            --label "org.opencontainers.image.revision=$SOURCE_REVISION" \
             --build-arg VERSION="$TAG" --build-arg BASE_TAG="$BASE_TAG" \
             --build-arg BASE_IMAGE="$REGISTRY/fabric-base" \
             -f dist/images/Dockerfile dist/images/
@@ -231,14 +244,43 @@ jobs:
         run: |
           docker buildx build --platform linux/arm64 --push \
             -t "$REGISTRY/fabric:$TAG-arm64" \
+            --metadata-file "$RUNNER_TEMP/fabric-arm64-build.json" \
+            --label "org.opencontainers.image.revision=$SOURCE_REVISION" \
             --build-arg VERSION="$TAG" --build-arg BASE_TAG="$BASE_TAG" \
             --build-arg BASE_IMAGE="$REGISTRY/fabric-base" \
             -f dist/images/Dockerfile dist/images/
 
       - name: Create multi-arch manifest
+        id: index
         run: |
-          docker buildx imagetools create -t "$REGISTRY/fabric:$TAG" \
-            "$REGISTRY/fabric:$TAG-amd64" "$REGISTRY/fabric:$TAG-arm64"
+          repository="$REGISTRY/fabric"
+          amd64=$(jq -er '.["containerimage.digest"] | select(test("^sha256:[0-9a-f]{64}$"))' "$RUNNER_TEMP/fabric-amd64-build.json")
+          arm64=$(jq -er '.["containerimage.digest"] | select(test("^sha256:[0-9a-f]{64}$"))' "$RUNNER_TEMP/fabric-arm64-build.json")
+          docker buildx imagetools inspect --raw "$repository@$amd64" > "$RUNNER_TEMP/fabric-amd64-manifest.json"
+          docker buildx imagetools inspect --raw "$repository@$arm64" > "$RUNNER_TEMP/fabric-arm64-manifest.json"
+          docker buildx imagetools create -t "$repository:$TAG" "$repository@$amd64" "$repository@$arm64"
+          digest=$(docker buildx imagetools inspect --format '{{json .Manifest}}' "$repository:$TAG" | jq -er '.digest | select(test("^sha256:[0-9a-f]{64}$"))')
+          docker buildx imagetools inspect --raw "$repository@$digest" > "$RUNNER_TEMP/fabric-index.json"
+          docker buildx imagetools inspect --raw "$repository:$TAG" > "$RUNNER_TEMP/fabric-tag.json"
+          if ! cmp -s "$RUNNER_TEMP/fabric-index.json" "$RUNNER_TEMP/fabric-tag.json"; then
+            printf 'The Fabric tag differs from the published index\n' >&2
+            exit 1
+          fi
+          hack/verify-release-index.py \
+            "$amd64" "$RUNNER_TEMP/fabric-amd64-manifest.json" \
+            "$arm64" "$RUNNER_TEMP/fabric-arm64-manifest.json" \
+            "$digest" "$RUNNER_TEMP/fabric-index.json"
+          for arch in amd64 arm64; do
+            child=$(jq -er --arg arch "$arch" '.manifests[] | select(.platform.os == "linux" and .platform.architecture == $arch) | .digest' "$RUNNER_TEMP/fabric-index.json")
+            if ! docker buildx imagetools inspect --format '{{json .Image}}' "$repository@$child" | jq -e --arg arch "$arch" --arg revision "$SOURCE_REVISION" '
+              .os == "linux" and .architecture == $arch and .config.Labels["org.opencontainers.image.revision"] == $revision
+            ' >/dev/null; then
+              printf 'Published Fabric image for %s has the wrong platform or revision\n' "$arch" >&2
+              exit 1
+            fi
+          done
+          printf 'digest=%s\nrevision=%s\n' "$digest" "$SOURCE_REVISION" >> "$GITHUB_OUTPUT"
+          printf 'Fabric image `%s:%s@%s` from source revision `%s`\n' "$repository" "$TAG" "$digest" "$SOURCE_REVISION" >> "$GITHUB_STEP_SUMMARY"
 
   publish-chart:
     name: Publish helm chart
@@ -289,9 +331,14 @@ jobs:
       - name: Create release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FABRIC_IMAGE_DIGEST: ${{ needs.build-images.outputs.digest }}
+          FABRIC_SOURCE_REVISION: ${{ needs.build-images.outputs.revision }}
         run: |
+          [[ "$FABRIC_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$FABRIC_SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          printf -v notes 'Fabric image `%s/fabric:%s@%s`\n\nSource revision `%s`\n\nInstall the chart with `helm install fabric oci://%s/charts/fabric --version %s`.\n' \
+            "$REGISTRY" "$GITHUB_REF_NAME" "$FABRIC_IMAGE_DIGEST" "$FABRIC_SOURCE_REVISION" "$REGISTRY" "${GITHUB_REF_NAME#v}"
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
             --generate-notes \
-            --notes "Images: \`$REGISTRY/fabric:$GITHUB_REF_NAME\`
-          Chart: \`helm install fabric oci://$REGISTRY/charts/fabric --version ${GITHUB_REF_NAME#v}\`"
+            --notes "$notes"
