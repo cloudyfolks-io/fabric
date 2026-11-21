@@ -11,9 +11,10 @@ all 72 entries. Recommended feature groups still require the existing approval.
 Use `/test e2e-all` for final release qualification against the current candidate.
 Selected PR coverage is never equivalent to a full release pass.
 
-The existing nightly retains IPv4, IPv6, dual-stack and extra suites (including
-kubevirt and chart upgrade). A weekly full run deterministically enables the
-six existing Valgrind configurations instead of random instrumentation on PRs.
+The nightly run checks IPv4 network policy, KubeVirt, IPv4 HA with TLS, chart
+upgrade, and router load balancing. Run Scheduled E2E with `full` to include
+IPv6, dual-stack, and the extended compatibility suites. The weekly full run
+enables Valgrind in six suites.
 
 E2E binaries are built once per executor attempt and distributed in a tar
 artifact, preserving executable permissions. A source SHA and SHA256 manifest
