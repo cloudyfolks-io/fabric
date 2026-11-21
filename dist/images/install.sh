@@ -2363,6 +2363,9 @@ spec:
               ingressMd5:
                 description: MD5 hash of ingress rules
                 type: string
+              observedGeneration:
+                format: int64
+                type: integer
               portGroup:
                 description: OVN port group name
                 type: string
