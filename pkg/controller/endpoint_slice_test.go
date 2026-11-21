@@ -1,6 +1,8 @@
 package controller
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 
@@ -9,11 +11,107 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes/fake"
+	corelisters "k8s.io/client-go/listers/core/v1"
+	k8stesting "k8s.io/client-go/testing"
+	"k8s.io/client-go/tools/cache"
 
 	fabricv1 "github.com/cloudyfolks-io/fabric/pkg/apis/fabric/v1"
 	"github.com/cloudyfolks-io/fabric/pkg/util"
 )
+
+func TestEndpointSliceReconcileServiceOwnership(t *testing.T) {
+	service := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:       "default",
+			Name:            "app",
+			UID:             "current-service",
+			ResourceVersion: "2",
+			Annotations: map[string]string{
+				util.SwitchLBRuleVipsAnnotation: "192.0.2.15",
+				util.ServiceHealthCheck:         "false",
+			},
+		},
+		Spec: corev1.ServiceSpec{
+			Type:      corev1.ServiceTypeClusterIP,
+			ClusterIP: corev1.ClusterIPNone,
+			Ports:     []corev1.ServicePort{{Name: "http", Port: 80, Protocol: corev1.ProtocolTCP}},
+		},
+	}
+	vpc := &fabricv1.Vpc{
+		ObjectMeta: metav1.ObjectMeta{Name: util.DefaultVpc},
+		Status: fabricv1.VpcStatus{
+			TCPLoadBalancer:        "tcp",
+			TCPSessionLoadBalancer: "tcp-affinity",
+		},
+	}
+
+	t.Run("ignore the replaced Service", func(t *testing.T) {
+		fc, err := newFakeControllerWithOptions(t, &FakeControllerOptions{Services: []*corev1.Service{service}, Vpcs: []*fabricv1.Vpc{vpc}})
+		require.NoError(t, err)
+		old := service.DeepCopy()
+		old.UID = "previous-service"
+		indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc})
+		require.NoError(t, indexer.Add(old))
+		fc.fakeController.servicesLister = corelisters.NewServiceLister(indexer)
+
+		err = fc.fakeController.handleUpdateEndpointSlice("default/app")
+		require.ErrorContains(t, err, "changed before its endpoints could be applied")
+		current, err := fc.fakeController.config.KubeClient.CoreV1().Services("default").Get(context.Background(), "app", metav1.GetOptions{})
+		require.NoError(t, err)
+		require.NotContains(t, current.Annotations, util.VpcAnnotation)
+	})
+
+	t.Run("require the Service revision when stamping the VPC", func(t *testing.T) {
+		fc, err := newFakeControllerWithOptions(t, &FakeControllerOptions{Services: []*corev1.Service{service}, Vpcs: []*fabricv1.Vpc{vpc}})
+		require.NoError(t, err)
+		fc.mockOvnClient.EXPECT().LoadBalancerDeleteVip("tcp", "192.0.2.15:80", true).Return(nil)
+		client := fc.fakeController.config.KubeClient.(*fake.Clientset)
+		client.PrependReactor("patch", "services", func(action k8stesting.Action) (bool, runtime.Object, error) {
+			patch := action.(k8stesting.PatchAction)
+			require.Equal(t, types.MergePatchType, patch.GetPatchType())
+			require.Equal(t, "app", patch.GetName())
+			require.Equal(t, "default", patch.GetNamespace())
+
+			expected, err := json.Marshal(map[string]any{
+				"metadata": map[string]any{
+					"uid":             "current-service",
+					"resourceVersion": "2",
+					"annotations":     map[string]string{util.VpcAnnotation: util.DefaultVpc},
+				},
+			})
+			require.NoError(t, err)
+			require.JSONEq(t, string(expected), string(patch.GetPatch()))
+			return true, nil, apierrors.NewConflict(schema.GroupResource{Resource: "services"}, "app", fmt.Errorf("service changed"))
+		})
+
+		err = fc.fakeController.handleUpdateEndpointSlice("default/app")
+		require.True(t, apierrors.IsConflict(err), "%v", err)
+	})
+
+	t.Run("retain a shared socket in the opposite affinity row", func(t *testing.T) {
+		empty := service.DeepCopy()
+		empty.Annotations[util.VpcAnnotation] = util.DefaultVpc
+		other := empty.DeepCopy()
+		other.Name, other.UID = "affinity", "affinity-service"
+		other.Spec.SessionAffinity = corev1.ServiceAffinityClientIP
+		fc, err := newFakeControllerWithOptions(t, &FakeControllerOptions{
+			Services: []*corev1.Service{empty, other},
+			Vpcs:     []*fabricv1.Vpc{vpc},
+		})
+		require.NoError(t, err)
+		fc.fakeController.config.EnableOVNLBPreferLocal = true
+		fc.mockOvnClient.EXPECT().LoadBalancerDeleteVip("tcp", "192.0.2.15:80", true).Return(nil)
+		fc.mockOvnClient.EXPECT().LoadBalancerDeleteIPPortMapping("tcp", "192.0.2.15:80").Return(nil)
+
+		require.NoError(t, fc.fakeController.handleUpdateEndpointSlice("default/app"))
+	})
+}
 
 func TestFindServiceKey(t *testing.T) {
 	tests := []struct {

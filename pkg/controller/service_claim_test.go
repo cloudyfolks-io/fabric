@@ -17,6 +17,7 @@ import (
 func TestClaimedEndpointSliceIgnoresLegacyIngress(t *testing.T) {
 	class := util.LoadBalancerClass
 	svc := makeLbSvc("default", "pool", &class, corev1.ServiceTypeLoadBalancer)
+	svc.UID = "current-service"
 	svc.Annotations = map[string]string{
 		util.RouterLBRuleVipsAnnotation: "192.0.2.10",
 		util.VpcAnnotation:              util.DefaultVpc,
@@ -30,16 +31,26 @@ func TestClaimedEndpointSliceIgnoresLegacyIngress(t *testing.T) {
 	require.NoError(t, err)
 	c := fc.fakeController
 	c.config.EnableLb, c.config.EnableOvnLbSvc = true, true
-	c.epKeyMutex = c.podKeyMutex
 	port := int32(8080)
 	portName := "http"
 	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc})
-	require.NoError(t, indexer.Add(&discoveryv1.EndpointSlice{
-		ObjectMeta:  metav1.ObjectMeta{Name: "pool-ends", Namespace: "default", Labels: map[string]string{discoveryv1.LabelServiceName: "pool"}},
+	current := &discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "pool-ends",
+			Namespace:       "default",
+			Labels:          map[string]string{discoveryv1.LabelServiceName: "pool"},
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(svc, corev1.SchemeGroupVersion.WithKind("Service"))},
+		},
 		AddressType: discoveryv1.AddressTypeIPv4,
 		Ports:       []discoveryv1.EndpointPort{{Name: &portName, Port: &port}},
 		Endpoints:   []discoveryv1.Endpoint{{Addresses: []string{"10.0.0.2"}}},
-	}))
+	}
+	require.NoError(t, indexer.Add(current))
+	stale := current.DeepCopy()
+	stale.Name = "previous-pool-ends"
+	stale.OwnerReferences[0].UID = "previous-service"
+	stale.Endpoints[0].Addresses = []string{"10.0.0.3"}
+	require.NoError(t, indexer.Add(stale))
 	c.endpointSlicesLister = discoverylisters.NewEndpointSliceLister(indexer)
 	fc.mockOvnClient.EXPECT().LoadBalancerAddVip("tcp", "192.0.2.10:80", "10.0.0.2:8080").Return(nil)
 	fc.mockOvnClient.EXPECT().LoadBalancerAddVip("tcp", "10.96.0.10:80", "10.0.0.2:8080").Return(nil)

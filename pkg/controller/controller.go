@@ -209,7 +209,6 @@ type Controller struct {
 	endpointSlicesSynced          cache.InformerSynced
 	epsIndexer                    cache.Indexer
 	addOrUpdateEndpointSliceQueue workqueue.TypedRateLimitingInterface[string]
-	epKeyMutex                    keymutex.KeyMutex
 	serviceL2StatusMutex          sync.RWMutex
 	serviceL2StatusIndexer        cache.Indexer
 	serviceL2StatusSynced         cache.InformerSynced
@@ -478,7 +477,6 @@ func Run(ctx context.Context, config *Configuration) {
 		endpointSlicesLister:          endpointSliceInformer.Lister(),
 		endpointSlicesSynced:          endpointSliceInformer.Informer().HasSynced,
 		addOrUpdateEndpointSliceQueue: newTypedRateLimitingQueue[string]("UpdateEndpointSlice", nil),
-		epKeyMutex:                    keymutex.NewHashed(numKeyLocks),
 
 		deploymentsLister: deploymentInformer.Lister(),
 		deploymentsSynced: deploymentInformer.Informer().HasSynced,

@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"slices"
@@ -13,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
@@ -94,18 +96,9 @@ func (c *Controller) handleUpdateEndpointSlice(key string) error {
 		return nil
 	}
 
-	c.epKeyMutex.LockKey(key)
-	defer func() { _ = c.epKeyMutex.UnlockKey(key) }()
+	c.svcKeyMutex.LockKey(key)
+	defer func() { _ = c.svcKeyMutex.UnlockKey(key) }()
 	klog.Infof("handle update endpointSlice for service %s", key)
-
-	endpointSlices, err := c.endpointSlicesLister.EndpointSlices(namespace).List(labels.Set{discoveryv1.LabelServiceName: name}.AsSelector())
-	if err != nil {
-		if errors.IsNotFound(err) {
-			return nil
-		}
-		klog.Error(err)
-		return err
-	}
 
 	cachedService, err := c.servicesLister.Services(namespace).Get(name)
 	if err != nil {
@@ -115,7 +108,37 @@ func (c *Controller) handleUpdateEndpointSlice(key string) error {
 		klog.Error(err)
 		return err
 	}
-	svc := cachedService.DeepCopy()
+
+	if cachedService.DeletionTimestamp != nil || len(getVipIps(cachedService)) == 0 {
+		return nil
+	}
+
+	endpointSlices, err := c.endpointSlicesLister.EndpointSlices(namespace).List(labels.Set{discoveryv1.LabelServiceName: name}.AsSelector())
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return nil
+		}
+		klog.Error(err)
+		return err
+	}
+	ctx := context.Background()
+	svc, err := c.config.KubeClient.CoreV1().Services(namespace).Get(ctx, name, metav1.GetOptions{})
+	if errors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if svc.DeletionTimestamp != nil {
+		return nil
+	}
+	if svc.UID != cachedService.UID || svc.ResourceVersion != cachedService.ResourceVersion {
+		return fmt.Errorf("service %s changed before its endpoints could be applied", key)
+	}
+	endpointSlices = slices.DeleteFunc(endpointSlices, func(slice *discoveryv1.EndpointSlice) bool {
+		owner := metav1.GetControllerOf(slice)
+		return owner != nil && owner.APIVersion == "v1" && owner.Kind == "Service" && (owner.Name != svc.Name || owner.UID != svc.UID)
+	})
 
 	var (
 		vpcName, subnetName  string
@@ -181,26 +204,18 @@ func (c *Controller) handleUpdateEndpointSlice(key string) error {
 		return err
 	}
 
-	var (
-		vpc    *fabricv1.Vpc
-		svcVpc string
-	)
-
-	if vpc, err = c.vpcsLister.Get(vpcName); err != nil {
+	vpc, err := c.vpcsLister.Get(vpcName)
+	if err != nil {
 		klog.Errorf("failed to get vpc %s, %v", vpcName, err)
 		return err
 	}
 
 	tcpLb, udpLb, sctpLb := vpc.Status.TCPLoadBalancer, vpc.Status.UDPLoadBalancer, vpc.Status.SctpLoadBalancer
-	oldTCPLb, oldUDPLb, oldSctpLb := vpc.Status.TCPSessionLoadBalancer, vpc.Status.UDPSessionLoadBalancer, vpc.Status.SctpSessionLoadBalancer
 	if svc.Spec.SessionAffinity == v1.ServiceAffinityClientIP {
-		tcpLb, udpLb, sctpLb, oldTCPLb, oldUDPLb, oldSctpLb = oldTCPLb, oldUDPLb, oldSctpLb, tcpLb, udpLb, sctpLb
+		tcpLb, udpLb, sctpLb = vpc.Status.TCPSessionLoadBalancer, vpc.Status.UDPSessionLoadBalancer, vpc.Status.SctpSessionLoadBalancer
 	}
 	if c.config.EnableOVNLBPreferLocal {
 		if err = c.clearLoadBalancerVIPExternalTrafficLocal(svc, tcpLb, udpLb, sctpLb); err != nil {
-			return err
-		}
-		if err = c.clearLoadBalancerVIPExternalTrafficLocal(svc, oldTCPLb, oldUDPLb, oldSctpLb); err != nil {
 			return err
 		}
 	}
@@ -208,14 +223,17 @@ func (c *Controller) handleUpdateEndpointSlice(key string) error {
 	for _, lbVip := range lbVips {
 		skipHealthCheck := ignoreHealthCheck || !slices.Contains(annotationVips, lbVip)
 		for _, port := range svc.Spec.Ports {
-			var lb, oldLb string
+			var lb string
 			switch port.Protocol {
 			case v1.ProtocolTCP:
-				lb, oldLb = tcpLb, oldTCPLb
+				lb = tcpLb
 			case v1.ProtocolUDP:
-				lb, oldLb = udpLb, oldUDPLb
+				lb = udpLb
 			case v1.ProtocolSCTP:
-				lb, oldLb = sctpLb, oldSctpLb
+				lb = sctpLb
+			}
+			if lb == "" {
+				return fmt.Errorf("VPC %s has no load balancer for service %s on %s", vpcName, key, port.Protocol)
 			}
 
 			var (
@@ -301,18 +319,8 @@ func (c *Controller) handleUpdateEndpointSlice(key string) error {
 					return err
 				}
 
-				klog.V(3).Infof("delete vip endpoint %s from old LB %s", vip, oldLb)
-				if err = c.OVNNbClient.LoadBalancerDeleteVip(oldLb, vip, true); err != nil {
-					klog.Errorf("failed to delete vip %s from LB %s: %v", vip, oldLb, err)
-					return err
-				}
-
 				if c.config.EnableOVNLBPreferLocal {
 					if err := c.OVNNbClient.LoadBalancerDeleteIPPortMapping(lb, vip); err != nil {
-						klog.Errorf("failed to delete ip port mapping for vip %s from LB %s: %v", vip, lb, err)
-						return err
-					}
-					if err := c.OVNNbClient.LoadBalancerDeleteIPPortMapping(oldLb, vip); err != nil {
 						klog.Errorf("failed to delete ip port mapping for vip %s from LB %s: %v", vip, lb, err)
 						return err
 					}
@@ -321,15 +329,25 @@ func (c *Controller) handleUpdateEndpointSlice(key string) error {
 		}
 	}
 
-	if svcVpc = svc.Annotations[util.VpcAnnotation]; svcVpc != vpcName {
-		patch := util.KVPatch{util.VpcAnnotation: vpcName}
-		if err = util.PatchAnnotations(c.config.KubeClient.CoreV1().Services(namespace), svc.Name, patch); err != nil {
-			klog.Errorf("failed to patch service %s: %v", key, err)
-			return err
-		}
+	if svc.Annotations[util.VpcAnnotation] == vpcName {
+		return nil
 	}
 
-	return nil
+	patch, err := json.Marshal(map[string]any{
+		"metadata": map[string]any{
+			"uid":             svc.UID,
+			"resourceVersion": svc.ResourceVersion,
+			"annotations":     map[string]string{util.VpcAnnotation: vpcName},
+		},
+	})
+	if err != nil {
+		return err
+	}
+	_, err = c.config.KubeClient.CoreV1().Services(namespace).Patch(ctx, name, types.MergePatchType, patch, metav1.PatchOptions{})
+	if errors.IsNotFound(err) {
+		return nil
+	}
+	return err
 }
 
 func (c *Controller) replaceEndpointAddressesWithSecondaryIPs(endpointSlices []*discoveryv1.EndpointSlice, pods []*v1.Pod) error {
