@@ -3,7 +3,7 @@ BASE_IMAGE = $(BASE_REGISTRY)/fabric-base
 
 COMMIT = git-$(shell git rev-parse --short HEAD)
 DATE = $(shell date +"%Y-%m-%d_%H:%M:%S")
-IMAGE_BUILD_TARGETS = build-fabric build-fabric-dpdk build-dev build-debug base-amd64 base-amd64-dpdk base-arm64 build-kit image-fabric image-fabric-arm64 image-fabric-debug image-fabric-dpdk image-test release release-arm release-arm-debug push-release local-dev
+IMAGE_BUILD_TARGETS = build-fabric build-fabric-dpdk build-dev build-debug base-amd64 base-amd64-dpdk base-arm64 build-kit image-fabric image-fabric-amd64 image-fabric-arm64 image-fabric-debug image-fabric-dpdk image-test release release-arm release-arm-debug push-release local-dev
 ifneq ($(filter $(IMAGE_BUILD_TARGETS),$(MAKECMDGOALS)),)
 IMAGE_REVISION ?= $(if $(GITHUB_SHA),$(GITHUB_SHA),$(shell git rev-parse HEAD))
 IMAGE_REF_NAME ?= $(if $(GITHUB_HEAD_REF),$(GITHUB_HEAD_REF),$(if $(GITHUB_REF_NAME),$(GITHUB_REF_NAME),$(shell git symbolic-ref -q --short HEAD || git describe --tags --exact-match 2>/dev/null || git rev-parse --short HEAD)))
@@ -118,9 +118,12 @@ build-kit: gen-crd build-go
 	DOCKER_BUILDKIT=1 docker build $(IMAGE_LABELS) -t $(REGISTRY)/fabric:$(RELEASE_TAG) --build-arg VERSION=$(RELEASE_TAG) -o type=docker --build-arg BASE_IMAGE=$(BASE_IMAGE) -f dist/images/Dockerfile dist/images/
 
 .PHONY: image-fabric
-image-fabric: gen-crd image-fabric-debug build-go
-	docker buildx build $(IMAGE_LABELS) --platform linux/amd64 -t $(REGISTRY)/fabric:$(RELEASE_TAG) --build-arg VERSION=$(RELEASE_TAG) --build-arg BASE_TAG=$(BASE_VERSION_TAG) -o type=docker --build-arg BASE_IMAGE=$(BASE_IMAGE) -f dist/images/Dockerfile dist/images/
+image-fabric: image-fabric-debug image-fabric-amd64
 	docker buildx build $(IMAGE_LABELS) --platform linux/amd64 -t $(REGISTRY)/fabric:$(LEGACY_TAG) --build-arg VERSION=$(LEGACY_TAG) --build-arg BASE_TAG=$(BASE_VERSION_TAG)-amd64-legacy -o type=docker --build-arg BASE_IMAGE=$(BASE_IMAGE) -f dist/images/Dockerfile dist/images/
+
+.PHONY: image-fabric-amd64
+image-fabric-amd64: gen-crd build-go
+	docker buildx build $(IMAGE_LABELS) --platform linux/amd64 -t $(REGISTRY)/fabric:$(RELEASE_TAG) --build-arg VERSION=$(RELEASE_TAG) --build-arg BASE_TAG=$(BASE_VERSION_TAG) -o type=docker --build-arg BASE_IMAGE=$(BASE_IMAGE) -f dist/images/Dockerfile dist/images/
 
 .PHONY: image-fabric-arm64
 image-fabric-arm64: gen-crd build-go-arm

@@ -82,8 +82,8 @@ jobs:
           go-version-file: go.mod
           check-latest: false
 
-      - name: Build candidate images from this checkout
-        run: make image-fabric
+      - name: Build the candidate image
+        run: make image-fabric-amd64
 
       - name: Create kind cluster
         run: |
