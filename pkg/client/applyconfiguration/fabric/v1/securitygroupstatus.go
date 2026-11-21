@@ -21,6 +21,7 @@ package v1
 // SecurityGroupStatusApplyConfiguration represents a declarative configuration of the SecurityGroupStatus type for use
 // with apply.
 type SecurityGroupStatusApplyConfiguration struct {
+	ObservedGeneration *int64 `json:"observedGeneration,omitempty"`
 	// OVN port group name
 	PortGroup *string `json:"portGroup,omitempty"`
 	// Current allow same group traffic setting
@@ -39,6 +40,11 @@ type SecurityGroupStatusApplyConfiguration struct {
 // apply.
 func SecurityGroupStatus() *SecurityGroupStatusApplyConfiguration {
 	return &SecurityGroupStatusApplyConfiguration{}
+}
+
+func (b *SecurityGroupStatusApplyConfiguration) WithObservedGeneration(value int64) *SecurityGroupStatusApplyConfiguration {
+	b.ObservedGeneration = &value
+	return b
 }
 
 // WithPortGroup sets the PortGroup field in the declarative configuration to the given value

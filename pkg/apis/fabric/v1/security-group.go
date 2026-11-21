@@ -96,6 +96,7 @@ type SecurityGroupRule struct {
 }
 
 type SecurityGroupStatus struct {
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 	// OVN port group name
 	PortGroup string `json:"portGroup"`
 	// Current allow same group traffic setting

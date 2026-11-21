@@ -1,13 +1,20 @@
 package controller
 
 import (
+	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	k8stesting "k8s.io/client-go/testing"
 
 	fabricv1 "github.com/cloudyfolks-io/fabric/pkg/apis/fabric/v1"
+	fabricfake "github.com/cloudyfolks-io/fabric/pkg/client/clientset/versioned/fake"
 	"github.com/cloudyfolks-io/fabric/pkg/ovs"
 	"github.com/cloudyfolks-io/fabric/pkg/ovsdb/ovnnb"
 	"github.com/cloudyfolks-io/fabric/pkg/util"
@@ -21,6 +28,61 @@ func mockLsp() *ovnnb.LogicalSwitchPort {
 			"security_groups":                     "sg",
 		},
 	}
+}
+
+func TestSecurityGroupAcknowledgesBothDirectionsForTheCurrentGeneration(t *testing.T) {
+	fake := newFakeController(t)
+	sg := &fabricv1.SecurityGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "receipt-sg", Generation: 3},
+		Status: fabricv1.SecurityGroupStatus{
+			ObservedGeneration: 2, IngressLastSyncSuccess: true, EgressLastSyncSuccess: true,
+		},
+	}
+	fail := errors.New("base egress ACL failed")
+	for _, baseResult := range []error{fail, nil} {
+		gomock.InOrder(
+			fake.mockOvnClient.EXPECT().UpdateSgACL(sg, ovnnb.ACLDirectionToLport).Return(nil),
+			fake.mockOvnClient.EXPECT().CreateSgBaseACL(sg.Name, ovnnb.ACLDirectionToLport).Return(nil),
+			fake.mockOvnClient.EXPECT().UpdateSgACL(sg, ovnnb.ACLDirectionFromLport).Return(nil),
+			fake.mockOvnClient.EXPECT().CreateSgBaseACL(sg.Name, ovnnb.ACLDirectionFromLport).Return(baseResult),
+		)
+		if baseResult != nil {
+			require.ErrorIs(t, fake.fakeController.syncSgACLs(sg, false), fail)
+			require.EqualValues(t, 2, sg.Status.ObservedGeneration)
+			require.False(t, sg.Status.EgressLastSyncSuccess)
+			continue
+		}
+		require.NoError(t, fake.fakeController.syncSgACLs(sg, false))
+		require.Equal(t, sg.Generation, sg.Status.ObservedGeneration)
+		require.True(t, sg.Status.IngressLastSyncSuccess)
+		require.True(t, sg.Status.EgressLastSyncSuccess)
+		require.NotEmpty(t, sg.Status.IngressMd5)
+		require.NotEmpty(t, sg.Status.EgressMd5)
+	}
+	status := sg.Status
+	require.NoError(t, fake.fakeController.syncSgACLs(sg, false))
+	require.Equal(t, status, sg.Status)
+}
+
+func TestSecurityGroupReceiptConflictRequiresReconciliation(t *testing.T) {
+	sg := &fabricv1.SecurityGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "receipt-sg", ResourceVersion: "17", Generation: 5},
+		Status:     fabricv1.SecurityGroupStatus{ObservedGeneration: 5},
+	}
+	fabricClient := fabricfake.NewSimpleClientset()
+	fabricClient.PrependReactor("patch", "security-groups", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		action := a.(k8stesting.PatchAction)
+		require.Equal(t, "status", action.GetSubresource())
+		require.Equal(t, types.MergePatchType, action.GetPatchType())
+		var payload fabricv1.SecurityGroup
+		require.NoError(t, json.Unmarshal(action.GetPatch(), &payload))
+		require.Equal(t, sg.ResourceVersion, payload.ResourceVersion)
+		require.Equal(t, sg.Generation, payload.Status.ObservedGeneration)
+		return true, nil, k8serrors.NewConflict(a.GetResource().GroupResource(), sg.Name, errors.New("the spec changed"))
+	})
+	c := &Controller{config: &Configuration{FabricClient: fabricClient}}
+	require.True(t, k8serrors.IsConflict(c.patchSgStatus(sg)))
+	require.Len(t, fabricClient.Actions(), 1)
 }
 
 func Test_getPortSg(t *testing.T) {

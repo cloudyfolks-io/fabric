@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -187,70 +188,52 @@ func (c *Controller) handleAddOrUpdateSg(key string, force bool) error {
 		return err
 	}
 
-	var ingressNeedUpdate, egressNeedUpdate bool
-	var newIngressMd5, newEgressMd5 string
-	if force {
-		klog.Infof("force update sg %s", sg.Name)
-		ingressNeedUpdate = true
-		egressNeedUpdate = true
-	} else {
-		newIngressMd5 = hex.EncodeToString(structhash.Md5(sg.Spec.IngressRules, 1))
-		if !sg.Status.IngressLastSyncSuccess || newIngressMd5 != sg.Status.IngressMd5 {
-			klog.Infof("ingress need update, sg:%s", sg.Name)
-			ingressNeedUpdate = true
+	if err := c.syncSgACLs(sg, force); err != nil {
+		if sg.Status != cachedSg.Status {
+			return errors.Join(err, c.patchSgStatus(sg))
 		}
-		newEgressMd5 = hex.EncodeToString(structhash.Md5(sg.Spec.EgressRules, 1))
-		if !sg.Status.EgressLastSyncSuccess || newEgressMd5 != sg.Status.EgressMd5 {
-			klog.Infof("egress need update, sg:%s", sg.Name)
-			egressNeedUpdate = true
-		}
-
-		if sg.Status.AllowSameGroupTraffic != sg.Spec.AllowSameGroupTraffic {
-			klog.Infof("both ingress && egress need update, sg:%s", sg.Name)
-			ingressNeedUpdate = true
-			egressNeedUpdate = true
+		return err
+	}
+	if sg.Status != cachedSg.Status {
+		if err := c.patchSgStatus(sg); err != nil {
+			return err
 		}
 	}
-
-	if ingressNeedUpdate {
-		if err = c.OVNNbClient.UpdateSgACL(sg, ovnnb.ACLDirectionToLport); err != nil {
-			sg.Status.IngressLastSyncSuccess = false
-			c.patchSgStatus(sg)
-			klog.Error(err)
-			return err
-		}
-
-		if err := c.OVNNbClient.CreateSgBaseACL(sg.Name, ovnnb.ACLDirectionToLport); err != nil {
-			klog.Error(err)
-			return err
-		}
-		sg.Status.IngressMd5 = newIngressMd5
-		sg.Status.IngressLastSyncSuccess = true
-		c.patchSgStatus(sg)
-	}
-	if egressNeedUpdate {
-		if err = c.OVNNbClient.UpdateSgACL(sg, ovnnb.ACLDirectionFromLport); err != nil {
-			sg.Status.EgressLastSyncSuccess = false
-			c.patchSgStatus(sg)
-			klog.Error(err)
-			return err
-		}
-
-		if err := c.OVNNbClient.CreateSgBaseACL(sg.Name, ovnnb.ACLDirectionFromLport); err != nil {
-			klog.Error(err)
-			return err
-		}
-
-		sg.Status.EgressMd5 = newEgressMd5
-		sg.Status.EgressLastSyncSuccess = true
-		c.patchSgStatus(sg)
-	}
-
-	sg.Status.PortGroup = ovs.GetSgPortGroupName(sg.Name)
-	sg.Status.AllowSameGroupTraffic = sg.Spec.AllowSameGroupTraffic
-	c.patchSgStatus(sg)
 	c.syncSgPortsQueue.Add(key)
 	return nil
+}
+
+func (c *Controller) syncSgACLs(sg *fabricv1.SecurityGroup, force bool) error {
+	ingressMd5 := hex.EncodeToString(structhash.Md5(sg.Spec.IngressRules, 1))
+	egressMd5 := hex.EncodeToString(structhash.Md5(sg.Spec.EgressRules, 1))
+	both := force || sg.Status.ObservedGeneration != sg.Generation || sg.Status.AllowSameGroupTraffic != sg.Spec.AllowSameGroupTraffic
+	if both || !sg.Status.IngressLastSyncSuccess || sg.Status.IngressMd5 != ingressMd5 {
+		if err := c.programSgDirection(sg, ovnnb.ACLDirectionToLport); err != nil {
+			sg.Status.IngressLastSyncSuccess = false
+			return err
+		}
+		sg.Status.IngressMd5 = ingressMd5
+		sg.Status.IngressLastSyncSuccess = true
+	}
+	if both || !sg.Status.EgressLastSyncSuccess || sg.Status.EgressMd5 != egressMd5 {
+		if err := c.programSgDirection(sg, ovnnb.ACLDirectionFromLport); err != nil {
+			sg.Status.EgressLastSyncSuccess = false
+			return err
+		}
+		sg.Status.EgressMd5 = egressMd5
+		sg.Status.EgressLastSyncSuccess = true
+	}
+	sg.Status.PortGroup = ovs.GetSgPortGroupName(sg.Name)
+	sg.Status.AllowSameGroupTraffic = sg.Spec.AllowSameGroupTraffic
+	sg.Status.ObservedGeneration = sg.Generation
+	return nil
+}
+
+func (c *Controller) programSgDirection(sg *fabricv1.SecurityGroup, direction string) error {
+	if err := c.OVNNbClient.UpdateSgACL(sg, direction); err != nil {
+		return err
+	}
+	return c.OVNNbClient.CreateSgBaseACL(sg.Name, direction)
 }
 
 func (c *Controller) validateSgRule(sg *fabricv1.SecurityGroup) error {
@@ -324,15 +307,18 @@ func (c *Controller) validateSgRule(sg *fabricv1.SecurityGroup) error {
 	return nil
 }
 
-func (c *Controller) patchSgStatus(sg *fabricv1.SecurityGroup) {
-	bytes, err := sg.Status.Bytes()
+func (c *Controller) patchSgStatus(sg *fabricv1.SecurityGroup) error {
+	payload, err := json.Marshal(map[string]any{
+		"metadata": map[string]string{"resourceVersion": sg.ResourceVersion},
+		"status":   sg.Status,
+	})
 	if err != nil {
-		klog.Error(err)
-		return
+		return err
 	}
-	if _, err = c.config.FabricClient.FabricV1().SecurityGroups().Patch(context.Background(), sg.Name, types.MergePatchType, bytes, metav1.PatchOptions{}, "status"); err != nil {
-		klog.Error("patch security group status failed", err)
+	if _, err := c.config.FabricClient.FabricV1().SecurityGroups().Patch(context.Background(), sg.Name, types.MergePatchType, payload, metav1.PatchOptions{}, "status"); err != nil {
+		return fmt.Errorf("patch security group %s status: %w", sg.Name, err)
 	}
+	return nil
 }
 
 func (c *Controller) handleDeleteSg(key string) error {

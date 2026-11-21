@@ -417,23 +417,10 @@ func (c *OVNNbClient) CreateSgBaseACL(sgName, direction string) error {
 
 	acls := make([]*ovnnb.ACL, 0)
 
-	newACL := func(match string) {
-		for tier := util.SecurityGroupAPITierMinimum; tier <= util.SecurityGroupAPITierMaximum; tier++ {
-			acl, err := c.newACL(pgName, direction, util.SecurityGroupBasePriority, match, ovnnb.ACLActionAllowRelated, util.ConvertSGTierToOvnTier(tier))
-			if err != nil {
-				klog.Error(err)
-				klog.Errorf("failed to create new base ingress acl for security group %s: %v", sgName, err)
-				return
-			}
-			acls = append(acls, acl)
-		}
-	}
-
 	allArpMatch := NewAndACLMatch(
 		NewACLMatch(portDirection, "==", "@"+pgName, ""),
 		NewACLMatch("arp", "", "", ""),
 	)
-	newACL(allArpMatch.String())
 
 	icmpv6Match := NewAndACLMatch(
 		NewACLMatch(portDirection, "==", "@"+pgName, ""),
@@ -441,7 +428,6 @@ func (c *OVNNbClient) CreateSgBaseACL(sgName, direction string) error {
 		NewACLMatch("icmp6.code", "==", "0", ""),
 		NewACLMatch("ip.ttl", "==", "255", ""),
 	)
-	newACL(icmpv6Match.String())
 
 	dhcpv4Match := NewAndACLMatch(
 		NewACLMatch(portDirection, "==", "@"+pgName, ""),
@@ -449,7 +435,6 @@ func (c *OVNNbClient) CreateSgBaseACL(sgName, direction string) error {
 		NewACLMatch("udp.dst", "==", dhcpv4UdpDst, ""),
 		NewACLMatch("ip4", "", "", ""),
 	)
-	newACL(dhcpv4Match.String())
 
 	dhcpv6Match := NewAndACLMatch(
 		NewACLMatch(portDirection, "==", "@"+pgName, ""),
@@ -457,17 +442,24 @@ func (c *OVNNbClient) CreateSgBaseACL(sgName, direction string) error {
 		NewACLMatch("udp.dst", "==", dhcpv6UdpDst, ""),
 		NewACLMatch("ip6", "", "", ""),
 	)
-	newACL(dhcpv6Match.String())
 
 	vrrpMatch := NewAndACLMatch(
 		NewACLMatch(portDirection, "==", "@"+pgName, ""),
 		NewACLMatch("ip.proto", "==", "112", ""),
 	)
-	newACL(vrrpMatch.String())
+	for _, match := range []string{allArpMatch.String(), icmpv6Match.String(), dhcpv4Match.String(), dhcpv6Match.String(), vrrpMatch.String()} {
+		for tier := util.SecurityGroupAPITierMinimum; tier <= util.SecurityGroupAPITierMaximum; tier++ {
+			acl, err := c.newACL(pgName, direction, util.SecurityGroupBasePriority, match, ovnnb.ACLActionAllowRelated, util.ConvertSGTierToOvnTier(tier))
+			if err != nil {
+				return fmt.Errorf("build %s base ACL for security group %s: %w", direction, sgName, err)
+			}
+			acls = append(acls, acl)
+		}
+	}
 
 	if err := c.CreateAcls(pgName, portGroupKey, acls...); err != nil {
 		klog.Error(err)
-		return fmt.Errorf("add ingress acls to port group %s: %w", pgName, err)
+		return fmt.Errorf("add %s base ACLs to port group %s: %w", direction, pgName, err)
 	}
 	return nil
 }
