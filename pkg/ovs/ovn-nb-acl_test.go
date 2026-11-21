@@ -1010,9 +1010,9 @@ func (suite *OvnClientTestSuite) testCreateSgBaseACL() {
 		expect(pg, match, ovnnb.ACLDirectionFromLport)
 	})
 
-	t.Run("should return no err when sg name is empty", func(t *testing.T) {
+	t.Run("reject an empty security group name", func(t *testing.T) {
 		err := nbClient.CreateSgBaseACL("", ovnnb.ACLDirectionFromLport)
-		require.NoError(t, err)
+		require.ErrorContains(t, err, "the port group name or logical switch name is required")
 	})
 }
 
