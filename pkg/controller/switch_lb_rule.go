@@ -159,10 +159,10 @@ func (c *Controller) handleAddOrUpdateSwitchLBRule(key string) error {
 	}
 
 	if oldSvc != nil && !switchRuleOwnsService(info, oldSvc) {
-		return fmt.Errorf("Service %s/%s belongs to a different owner", slr.Spec.Namespace, svcName)
+		return fmt.Errorf("the Service %s/%s belongs to a different owner", slr.Spec.Namespace, svcName)
 	}
 	if len(slr.Spec.Endpoints) > 0 && oldEps != nil && !switchRuleOwnsEndpoints(info, oldSvc, oldEps) {
-		return fmt.Errorf("Endpoints %s/%s belongs to a different owner", slr.Spec.Namespace, svcName)
+		return fmt.Errorf("the Endpoints %s/%s belong to a different owner", slr.Spec.Namespace, svcName)
 	}
 
 	var (
@@ -185,7 +185,6 @@ func (c *Controller) handleAddOrUpdateSwitchLBRule(key string) error {
 				return err
 			}
 		}
-
 	}
 
 	frontend := slr.DeepCopy()

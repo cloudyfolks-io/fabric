@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -87,7 +88,7 @@ func TestEndpointSliceReconcileServiceOwnership(t *testing.T) {
 			})
 			require.NoError(t, err)
 			require.JSONEq(t, string(expected), string(patch.GetPatch()))
-			return true, nil, apierrors.NewConflict(schema.GroupResource{Resource: "services"}, "app", fmt.Errorf("service changed"))
+			return true, nil, apierrors.NewConflict(schema.GroupResource{Resource: "services"}, "app", errors.New("service changed"))
 		})
 
 		err = fc.fakeController.handleUpdateEndpointSlice("default/app")

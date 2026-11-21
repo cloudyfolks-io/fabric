@@ -223,7 +223,7 @@ func (c *Controller) upsertLoadBalancerChildSwitchRule(parent *fabricv1.LoadBala
 		return err
 	}
 	if !loadBalancerOwnsRule(parent, existing) {
-		return fmt.Errorf("SwitchLBRule %s belongs to a different owner", desired.Name)
+		return fmt.Errorf("the SwitchLBRule %s belongs to a different owner", desired.Name)
 	}
 	updated := existing.DeepCopy()
 	updated.Labels = desired.Labels
@@ -248,7 +248,7 @@ func (c *Controller) upsertLoadBalancerChildRouterRule(parent *fabricv1.LoadBala
 		return err
 	}
 	if !loadBalancerOwnsRule(parent, existing) {
-		return fmt.Errorf("RouterLBRule %s belongs to a different owner", desired.Name)
+		return fmt.Errorf("the RouterLBRule %s belongs to a different owner", desired.Name)
 	}
 	updated := existing.DeepCopy()
 	updated.Labels = desired.Labels

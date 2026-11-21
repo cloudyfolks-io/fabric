@@ -3,6 +3,7 @@ package switch_lb_rule
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -12,9 +13,7 @@ import (
 
 	"github.com/onsi/ginkgo/v2"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/utils/ptr"
 
 	fabricv1 "github.com/cloudyfolks-io/fabric/pkg/apis/fabric/v1"
 	"github.com/cloudyfolks-io/fabric/pkg/util"
@@ -121,7 +120,7 @@ func createMovePath(f *framework.Framework, name string) movePath {
 	ginkgo.DeferCleanup(vpcClient.DeleteSync, path.vpc)
 	subnetClient := f.SubnetClient()
 	subnet := framework.MakeSubnet(path.subnet, "", framework.RandomCIDR(f.ClusterIPFamily), "", path.vpc, "", nil, nil, nil)
-	subnet.Spec.EnableLb = ptr.To(true)
+	subnet.Spec.EnableLb = new(true)
 	subnetClient.CreateSync(subnet)
 	ginkgo.DeferCleanup(subnetClient.DeleteSync, path.subnet)
 	podClient := f.PodClient()
@@ -183,17 +182,17 @@ func readMoveVIPRows(names []string) (map[string]map[string]string, error) {
 		return nil, err
 	}
 	if !slices.Equal(table.Headings, []string{"name", "vips"}) || len(table.Data) != len(names) {
-		return nil, fmt.Errorf("the Northbound response does not contain all requested load balancers")
+		return nil, errors.New("the Northbound response does not contain all requested load balancers")
 	}
 	rows := make(map[string]map[string]string, len(names))
 	for _, row := range table.Data {
 		if len(row) != 2 {
-			return nil, fmt.Errorf("the Northbound response contains a malformed load balancer row")
+			return nil, errors.New("the Northbound response contains a malformed load balancer row")
 		}
 		var name string
 		var encodedMap []json.RawMessage
 		if err := json.Unmarshal(row[0], &name); err != nil || !slices.Contains(names, name) || rows[name] != nil {
-			return nil, fmt.Errorf("the Northbound response contains an unexpected load balancer name")
+			return nil, errors.New("the Northbound response contains an unexpected load balancer name")
 		}
 		if err := json.Unmarshal(row[1], &encodedMap); err != nil || len(encodedMap) != 2 || string(encodedMap[0]) != `"map"` {
 			return nil, fmt.Errorf("the Northbound response contains invalid VIPs for %s", name)
@@ -231,7 +230,7 @@ func probeMoveSocket(namespace, client, socket string) (moveProbe, error) {
 	}
 	code, reply, found := strings.Cut(string(stdout), "\n")
 	if !found {
-		return moveProbe{}, fmt.Errorf("the curl probe did not report its exit status")
+		return moveProbe{}, errors.New("the curl probe did not report its exit status")
 	}
 	status, err := strconv.Atoi(strings.TrimSpace(code))
 	if err != nil {
@@ -240,7 +239,7 @@ func probeMoveSocket(namespace, client, socket string) (moveProbe, error) {
 	reply = strings.TrimSuffix(reply, "\n")
 	separator := strings.LastIndex(reply, "\n")
 	if separator < 0 {
-		return moveProbe{}, fmt.Errorf("the curl probe did not report its successful connections")
+		return moveProbe{}, errors.New("the curl probe did not report its successful connections")
 	}
 	connections, err := strconv.Atoi(strings.TrimSpace(reply[separator+1:]))
 	return moveProbe{status: status, connections: connections, backend: strings.TrimSpace(reply[:separator])}, err

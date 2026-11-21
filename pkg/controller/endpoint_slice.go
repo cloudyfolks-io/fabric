@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"reflect"
 	"slices"
@@ -656,7 +657,7 @@ func (c *Controller) getVpcAndSubnetForEndpoints(endpointSlices []*discoveryv1.E
 
 	if declaredVPC != "" && service.Annotations[util.SwitchLBRuleVipsAnnotation] != "" {
 		if vpcName != "" && vpcName != declaredVPC {
-			return "", "", fmt.Errorf("the Service backend VPC differs from its declared VPC")
+			return "", "", stderrors.New("the Service backend VPC differs from its declared VPC")
 		}
 		vpcName = declaredVPC
 	}

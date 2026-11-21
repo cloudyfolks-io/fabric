@@ -234,7 +234,7 @@ function ovn-nbctl {
 				t.Fatalf("unexpected startup result %v\n%s", err, output)
 			}
 			var writes []string
-			for _, line := range strings.Split(string(output), "\n") {
+			for line := range strings.SplitSeq(string(output), "\n") {
 				if strings.HasPrefix(line, "WRITE ") {
 					writes = append(writes, line)
 				}
