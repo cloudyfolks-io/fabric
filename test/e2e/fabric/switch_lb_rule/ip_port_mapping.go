@@ -10,7 +10,6 @@ import (
 	"github.com/onsi/ginkgo/v2"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 
 	fabricv1 "github.com/cloudyfolks-io/fabric/pkg/apis/fabric/v1"
 	"github.com/cloudyfolks-io/fabric/pkg/util"
@@ -140,6 +139,17 @@ var _ = framework.Describe("[group:slr-ip-port-mapping]", func() {
 		vpcClient.DeleteSync(vpcName)
 	})
 
+	allocateVIP := func(ruleName string) string {
+		// Reserve a ClusterIP without claiming the rule's frontend name or socket.
+		svc := framework.MakeService("vip-"+ruleName, corev1.ServiceTypeClusterIP, nil, nil,
+			[]corev1.ServicePort{{Name: "allocator", Protocol: corev1.ProtocolTCP, Port: 80}},
+			corev1.ServiceAffinityNone)
+		svc = serviceClient.CreateSync(svc, func(s *corev1.Service) (bool, error) {
+			return len(s.Spec.ClusterIPs) != 0, nil
+		}, "cluster ips are not empty")
+		return svc.Spec.ClusterIPs[0]
+	}
+
 	ginkgo.It("should remove orphaned ip_port_mappings when backends are removed", func() {
 		f.SkipVersionPriorTo(1, 12, "SwitchLBRule was introduced in v1.12")
 		if !f.IsIPv4() {
@@ -148,7 +158,6 @@ var _ = framework.Describe("[group:slr-ip-port-mapping]", func() {
 
 		var err error
 		slrName := "slr-orphan-" + suffix
-		svcName := generateServiceName(slrName)
 		stsName := "sts-" + suffix
 		label := "app-orphan"
 
@@ -163,19 +172,7 @@ var _ = framework.Describe("[group:slr-ip-port-mapping]", func() {
 		framework.ExpectHaveLen(pods.Items, 3)
 
 		ginkgo.By("Creating service to get VIP")
-		ports := []corev1.ServicePort{{
-			Name:       "http",
-			Protocol:   corev1.ProtocolTCP,
-			Port:       8080,
-			TargetPort: intstr.FromInt32(80),
-		}}
-		svc := framework.MakeService(svcName, corev1.ServiceTypeClusterIP,
-			map[string]string{util.LogicalSwitchAnnotation: subnetName},
-			labels, ports, corev1.ServiceAffinityNone)
-		svc = serviceClient.CreateSync(svc, func(s *corev1.Service) (bool, error) {
-			return len(s.Spec.ClusterIPs) != 0, nil
-		}, "cluster ips are not empty")
-		vip := svc.Spec.ClusterIPs[0]
+		vip := allocateVIP(slrName)
 
 		ginkgo.By("Creating SwitchLBRule")
 		slrPorts := []fabricv1.SwitchLBRulePort{{
@@ -242,7 +239,6 @@ var _ = framework.Describe("[group:slr-ip-port-mapping]", func() {
 
 		var err error
 		slrName := "slr-add-" + suffix
-		svcName := generateServiceName(slrName)
 		stsName := "sts-" + suffix
 		label := "app-add"
 
@@ -254,19 +250,7 @@ var _ = framework.Describe("[group:slr-ip-port-mapping]", func() {
 		_ = stsClient.CreateSync(sts)
 
 		ginkgo.By("Creating service to get VIP")
-		ports := []corev1.ServicePort{{
-			Name:       "http",
-			Protocol:   corev1.ProtocolTCP,
-			Port:       8080,
-			TargetPort: intstr.FromInt32(80),
-		}}
-		svc := framework.MakeService(svcName, corev1.ServiceTypeClusterIP,
-			map[string]string{util.LogicalSwitchAnnotation: subnetName},
-			labels, ports, corev1.ServiceAffinityNone)
-		svc = serviceClient.CreateSync(svc, func(s *corev1.Service) (bool, error) {
-			return len(s.Spec.ClusterIPs) != 0, nil
-		}, "cluster ips are not empty")
-		vip := svc.Spec.ClusterIPs[0]
+		vip := allocateVIP(slrName)
 
 		ginkgo.By("Creating SwitchLBRule")
 		slrPorts := []fabricv1.SwitchLBRulePort{{
@@ -348,8 +332,6 @@ var _ = framework.Describe("[group:slr-ip-port-mapping]", func() {
 		var err error
 		slr1Name := "slr-shared-1-" + suffix
 		slr2Name := "slr-shared-2-" + suffix
-		svc1Name := generateServiceName(slr1Name)
-		svc2Name := generateServiceName(slr2Name)
 		stsName := "sts-shared-" + suffix
 		label := "app-shared"
 
@@ -364,34 +346,10 @@ var _ = framework.Describe("[group:slr-ip-port-mapping]", func() {
 		framework.ExpectHaveLen(pods.Items, 3)
 
 		ginkgo.By("Creating first service")
-		ports1 := []corev1.ServicePort{{
-			Name:       "http",
-			Protocol:   corev1.ProtocolTCP,
-			Port:       8081,
-			TargetPort: intstr.FromInt32(80),
-		}}
-		svc1 := framework.MakeService(svc1Name, corev1.ServiceTypeClusterIP,
-			map[string]string{util.LogicalSwitchAnnotation: subnetName},
-			labels, ports1, corev1.ServiceAffinityNone)
-		svc1 = serviceClient.CreateSync(svc1, func(s *corev1.Service) (bool, error) {
-			return len(s.Spec.ClusterIPs) != 0, nil
-		}, "cluster ips are not empty")
-		vip1 := svc1.Spec.ClusterIPs[0]
+		vip1 := allocateVIP(slr1Name)
 
 		ginkgo.By("Creating second service")
-		ports2 := []corev1.ServicePort{{
-			Name:       "http",
-			Protocol:   corev1.ProtocolTCP,
-			Port:       8082,
-			TargetPort: intstr.FromInt32(80),
-		}}
-		svc2 := framework.MakeService(svc2Name, corev1.ServiceTypeClusterIP,
-			map[string]string{util.LogicalSwitchAnnotation: subnetName},
-			labels, ports2, corev1.ServiceAffinityNone)
-		svc2 = serviceClient.CreateSync(svc2, func(s *corev1.Service) (bool, error) {
-			return len(s.Spec.ClusterIPs) != 0, nil
-		}, "cluster ips are not empty")
-		vip2 := svc2.Spec.ClusterIPs[0]
+		vip2 := allocateVIP(slr2Name)
 
 		ginkgo.By("Creating first SwitchLBRule with endpoints " + pods.Items[0].Status.PodIP + " and " + pods.Items[1].Status.PodIP)
 		slr1Ports := []fabricv1.SwitchLBRulePort{{
