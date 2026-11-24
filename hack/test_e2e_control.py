@@ -724,6 +724,42 @@ class E2EControlTest(unittest.TestCase):
         self.assertNotIn("inputs.headSHA || github.sha", workflow)
         self.assertNotIn("contents: write", workflow)
 
+    def testGateReservationSkipsNonResultExecutorRecovery(self):
+        workflow = (repoRoot / ".github/workflows/x86-e2e-gate.yaml").read_text()
+        start = workflow.index('if [ "$recoverLatest" = true ]')
+        end = workflow.index("; then", start)
+        guard = workflow[start:end]
+        script = f"""
+        RUN_ACTION=$1
+        recoveryRunConclusion=$2
+        recoverLatest=$3
+        recoveryRunStatus=completed
+        recoveryRunId=45343111141
+        recoveryRunAttempt=1
+        RUN_ID=45437332383
+        RUN_ATTEMPT=1
+        {guard}; then
+          echo recover
+        else
+          echo skip
+        fi
+        """
+        for action, conclusion, eligible, expected in [
+            ("reservation", "cancelled", "true", "skip"),
+            ("reservation", "", "true", "skip"),
+            ("reservation", "success", "true", "recover"),
+            ("reservation", "failure", "true", "recover"),
+            ("reservation", "success", "false", "skip"),
+            ("approval", "cancelled", "true", "recover"),
+            ("completed", "cancelled", "true", "recover"),
+        ]:
+            with self.subTest(action=action, conclusion=conclusion, eligible=eligible):
+                result = subprocess.check_output(
+                    ["bash", "-eu", "-c", script, "gate", action, conclusion, eligible],
+                    text=True,
+                )
+                self.assertEqual(result.strip(), expected)
+
     def testExecutorDispatchKeepsPullRequestAndPushCoverageUnchanged(self):
         workflow = (repoRoot / ".github/workflows/build-x86-image.yaml").read_text()
         blocks = e2eSelector.workflowJobBlocks(workflow)

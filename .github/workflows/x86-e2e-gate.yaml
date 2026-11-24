@@ -990,6 +990,7 @@ jobs:
             recoveryRunId=$(jq -r '.id // empty' recovery-latest-run.json)
             recoveryRunAttempt=$(jq -r '.run_attempt // empty' recovery-latest-run.json)
             recoveryRunStatus=$(jq -r '.status // empty' recovery-latest-run.json)
+            recoveryRunConclusion=$(jq -r '.conclusion // empty' recovery-latest-run.json)
             recoveryRequestKey=$(python3 - <<'PY'
           import json
           import os
@@ -1024,6 +1025,10 @@ jobs:
             fi
             if [ "$recoverLatest" = true ] && [ "$recoveryRunStatus" = completed ] && \
                [ -n "$recoveryRunId" ] && {
+              [ "$RUN_ACTION" != reservation ] ||
+              [ "$recoveryRunConclusion" = success ] ||
+              [ "$recoveryRunConclusion" = failure ];
+            } && {
               [ "$RUN_ID" != "$recoveryRunId" ] || [ "$RUN_ATTEMPT" != "$recoveryRunAttempt" ];
             }; then
               artifactName="x86-e2e-gate-decision-$recoveryRunId-$recoveryRunAttempt"
