@@ -110,6 +110,9 @@ jobs:
     name: x86 E2E Selection
     if: github.event_name != 'workflow_dispatch' || github.actor == 'github-actions[bot]'
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: read
     env:
       GH_TOKEN: ${{ github.event_name == 'workflow_dispatch' && github.token || '' }}
       PYTHONDONTWRITEBYTECODE: "1"
