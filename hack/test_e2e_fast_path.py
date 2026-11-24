@@ -25,6 +25,21 @@ class FastPathTest(unittest.TestCase):
         self.assertIn("sourceSHA: ${{ steps.source.outputs.sha }}", workflow)
         self.assertEqual(workflow.count("*restore-e2e-binaries"), 18)
 
+    def test_temporary_x86_artifacts_expire_after_one_day(self):
+        import re
+        workflow = (ROOT / ".github/workflows/build-x86-image.yaml").read_text()
+        uploads = re.findall(
+            r"uses: actions/upload-artifact@\S+\n        with:\n((?: {10}[^\n]+\n)+)", workflow,
+        )
+        one_day = set()
+        for inputs in uploads:
+            if "          retention-days: 1\n" in inputs:
+                one_day.add(re.search(r"^          name: (.+)$", inputs, re.M).group(1))
+        suffix = "${{ github.run_id }}-${{ github.run_attempt }}"
+        self.assertEqual(one_day, {
+            "fabric", "fabric-dpdk", f"e2e-binaries-{suffix}", f"e2e-hosted-binaries-{suffix}",
+        })
+
     def test_hosted_artifact_matches_its_candidate_checkout(self):
         workflow = (ROOT / ".github/workflows/build-x86-image.yaml").read_text()
         producer = workflow.split("  build-e2e-binaries:\n")[1].split("\n  netpol-path-filter:")[0]

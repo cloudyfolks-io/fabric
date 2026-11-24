@@ -586,6 +586,7 @@ jobs:
         with:
           name: fabric-dpdk
           path: fabric-dpdk.tar
+          retention-days: 1
 
   build-fabric:
     name: Build fabric
@@ -736,6 +737,7 @@ jobs:
         with:
           name: fabric
           path: fabric.tar
+          retention-days: 1
 
   build-e2e-binaries:
     name: Build E2E Binaries
@@ -830,7 +832,7 @@ jobs:
           name: e2e-binaries-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/binaries.tar
           compression-level: 0
-          retention-days: 3
+          retention-days: 1
 
       # Hosted OVN runs from the candidate checkout, unlike the base-source
       # suites above. Keep its original source coverage and immutable binding.
@@ -859,7 +861,7 @@ jobs:
           name: e2e-hosted-binaries-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/hosted-binaries/binaries.tar
           compression-level: 0
-          retention-days: 3
+          retention-days: 1
 
   netpol-path-filter:
     name: Network Policy Path Filter
