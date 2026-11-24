@@ -771,9 +771,14 @@ class E2EControlTest(unittest.TestCase):
         }
 
         self.assertIn("workflow_dispatch:", workflow)
+        self.assertRegex(
+            blocks["e2e-selection"],
+            r"(?m)^    permissions:\n      contents: read\n      pull-requests: read\n(?=    \S)",
+        )
+        self.assertEqual(workflow.count("pull-requests:"), 1)
         self.assertIn(
             "GH_TOKEN: ${{ github.event_name == 'workflow_dispatch' && github.token || '' }}",
-            workflow,
+            blocks["e2e-selection"],
         )
         self.assertIn("unknown requested E2E group", workflow)
         self.assertIn("executor catalog revision does not match dispatcher", workflow)
