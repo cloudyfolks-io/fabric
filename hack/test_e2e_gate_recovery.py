@@ -1,4 +1,5 @@
 import copy
+import subprocess
 import unittest
 
 import e2e_gate_recovery as recovery
@@ -113,6 +114,18 @@ class GateRecoveryTest(unittest.TestCase):
         self.check["conclusion"] = "action_required"
         self.assertIsNone(recovery.staleTarget(pulls, self.api))
 
+    def testUnreadableEvidenceSelectsInvalidationButNeverRecovery(self):
+        def api(path, paginate=False):
+            if "timeline" in path:
+                raise subprocess.CalledProcessError(1, "gh")
+            return self.api(path, paginate)
+
+        self.assertIsNone(recovery.pendingExecutor([self.run], "cloudyfolks-io/fabric", api))
+        self.check["conclusion"] = "success"
+        pulls = [{"number": 39, **self.pullRequest}]
+        self.assertEqual(recovery.staleTarget(pulls, api), (39, self.check["head_sha"]))
+        self.timeline = [[{"event": "commented"}]]
+        self.assertEqual(recovery.staleTarget(pulls, self.api), (39, self.check["head_sha"]))
     def testWaitingCheckMustIdentifyOriginalTargetAndGeneration(self):
         text = self.check["output"]["text"]
         for stale in ("", text.splitlines()[0], text.replace("main", "release-1.13"),

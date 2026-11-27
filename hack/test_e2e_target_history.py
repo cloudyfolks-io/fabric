@@ -87,28 +87,78 @@ class HistoryTests(unittest.TestCase):
             with self.subTest(pages=pages), self.assertRaises(ValueError):
                 target.TargetHistory(pages)
 
-    def test_cli_reuses_single_fetch(self):
+    def test_writer_migrates_legacy_completion_before_overwriting_check(self):
+        pages = [[comment(1, 1), comment(2, 2), comment(3, 4)]]
+        checks = [{"name": "x86-e2e / required-gate", "app": {"slug": "github-actions"},
+                   "external_id": f"x86-e2e-pr-1-{REQUEST['headSHA']}", "head_sha": REQUEST["headSHA"],
+                   "conclusion": "action_required", "completed_at": date(3),
+                   "output": {"summary": target.control.invalidationSummary,
+                              "text": f"x86-e2e-gate request={'a' * 64} approval=1"}}]
+
+        def fetch(cmd):
+            return json.dumps(pages if "/timeline?" in cmd[-1] else [{"check_runs": checks}])
+
+        def post(args, check):
+            self.assertTrue(check)
+            self.assertEqual(args[-1], f"body=<!-- x86-e2e-retarget edited_at={date(3)} -->")
+            pages[0].append(comment(4, 5, args[-1][5:], BOT))
+
+        with patch.dict("os.environ", GITHUB_REPOSITORY=REPO), patch.object(target.subprocess, "check_output", fetch), \
+                patch.object(target.subprocess, "run", side_effect=post) as write, \
+                patch("sys.argv", ["history", "comments", "1", "--head", REQUEST["headSHA"], "--persist-cutoff"]), \
+                contextlib.redirect_stdout(io.StringIO()):
+            target.main()
+            checks[0].update(conclusion="success", output={"summary": "Passed", "text": ""})
+            target.main()
+            write.assert_called_once()
+        data = target.TargetHistory(pages, checks)
+        self.assertEqual([generation for generation in (1, 2, 3) if data.is_fresh(generation)], [3])
+
+    def test_cli_reads_one_check_snapshot_and_one_timeline(self):
         pages = [[comment(1, 0), edit(1)], [comment(2, 2)]]
 
         def cli(*args):
             output = io.StringIO()
-            with patch("sys.argv", ["history", *args]), contextlib.redirect_stdout(output):
+            with patch("sys.argv", ["history", *args, "--head", REQUEST["headSHA"]]), contextlib.redirect_stdout(output):
                 target.main()
             return output.getvalue()
 
         with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", GITHUB_REPOSITORY=REPO), \
-                patch.object(target.subprocess, "check_output", return_value=json.dumps(pages)) as fetch:
+                patch.object(target.subprocess, "check_output", side_effect=lambda cmd: json.dumps(
+                    pages if "/timeline?" in cmd[-1] else [{"check_runs": []}])) as fetch:
             path = Path(directory, "generations.json")
             self.assertEqual(json.loads(cli("comments", "1", "--generations-file", str(path))), [[], [pages[1][0]]])
             self.assertEqual(json.loads(path.read_text()), [2])
-            fetch.assert_called_once_with(["gh", "api", "--paginate", "--slurp",
-                                          f"repos/{REPO}/issues/1/timeline?per_page=100"])
+            self.assertEqual(fetch.call_count, 2)
+            fetch.assert_called_with(["gh", "api", "--paginate", "--slurp",
+                                      f"repos/{REPO}/issues/1/timeline?per_page=100"])
             cli("validate", "1", "2")
             with self.assertRaises(ValueError):
-                cli("validate", "1", "1")
+                cli("validate", "1", "2", "1")
             fetch.side_effect = subprocess.CalledProcessError(1, "gh")
             with self.assertRaises(subprocess.CalledProcessError):
                 cli("comments", "1")
+
+    def test_retest_rechecks_failed_executor_against_current_fixed_generation(self):
+        head = REQUEST["headSHA"]
+        key = target.control.executorRequestKey(dict(REQUEST, prNumber=1))
+        run = {"status": "completed", "conclusion": "failure", "head_sha": REQUEST["baseSHA"],
+               "display_title": f"x86-e2e pr=1 head={head} approval=1 generation=9 groups=- full=0 ref=main"}
+        check = {"id": 9, "head_sha": head, "external_id": f"x86-e2e-pr-1-{head}",
+                 "name": "x86-e2e / required-gate", "app": {"slug": "github-actions"}, "output": {}}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory, "run.json")
+            path.write_text(json.dumps(run))
+            args = ["history", "validate", "1", "2", "--head", head, "--failed-executor", str(path), REQUEST["catalogRevision"]]
+            pages = [[comment(1, 1), comment(2, 2, "/retest e2e-failed")]]
+            with patch.dict("os.environ", GITHUB_REPOSITORY=REPO), patch("sys.argv", args), \
+                    patch.object(target.subprocess, "check_output", side_effect=lambda cmd: json.dumps(
+                        pages if "/timeline?" in cmd[-1] else [{"check_runs": [check]}])):
+                check["output"]["text"] = f"x86-e2e-gate request={key} approval=1\nx86-e2e-target base={REQUEST['baseSHA']} ref=main"
+                target.main()
+                check["output"]["text"] = check["output"]["text"].replace("approval=1", "approval=2")
+                with self.assertRaisesRegex(ValueError, "no longer matches"):
+                    target.main()
 
 
 if __name__ == "__main__":

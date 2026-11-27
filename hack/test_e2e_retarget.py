@@ -10,6 +10,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import e2e_control as control
+import e2e_gate_recovery as recovery
+import e2e_invalidate as invalidate
+import e2e_selector as selector
+
 
 WORKFLOWS = Path(__file__).resolve().parents[1] / ".github/workflows"
 WORKFLOW = (WORKFLOWS / "x86-e2e-gate.yaml").read_text()
@@ -27,10 +32,8 @@ RECORDED = dict(COMMAND, id=124, user={"login": "github-actions[bot]", "type": "
 class RetargetTest(unittest.TestCase):
     def setUp(self):
         self.api = Mock()
-        anchor = WORKFLOW.index("&reconcile_target")
-        self.handler = textwrap.dedent(re.search(
-            r"^        run: \|\n((?:          [^\n]*\n|\n)+)", WORKFLOW[anchor:], re.M
-        )[1])
+        self.comments = []
+        self.now = "2026-11-20T08:01:00Z"
         self.pr = {"number": 7, "state": "open", "head": {"sha": HEAD},
                    "base": {"ref": "release-1.2", "sha": BASE}}
         self.check = {
@@ -55,7 +58,13 @@ class RetargetTest(unittest.TestCase):
                 if isinstance(timeline, Exception):
                     raise timeline
                 self.assertIsNotNone(timeline)
-                return timeline
+                return [*timeline, self.comments]
+            if path == "issues/7/comments?per_page=100":
+                return [self.comments]
+            if path == "issues/7/comments":
+                item = dict(RECORDED, id=200 + len(self.comments), created_at=self.now, body=kwargs["body"]["body"])
+                self.comments.append(item)
+                return item
             self.assertEqual((path, args), ("check-runs/17", ("--method", "PATCH", "--input", "-")))
             return {}
 
@@ -73,7 +82,7 @@ class RetargetTest(unittest.TestCase):
             return json.dumps(response)
 
         with patch.dict(os.environ, env, clear=True), patch.object(subprocess, "check_output", gh):
-            exec(self.handler, {"__name__": "__main__"})
+            invalidate.invalidate("7", HEAD, edited_at)
         return [call for call in self.api.call_args_list if "PATCH" in call.args]
 
     def test_only_base_edits_take_the_retarget_lock(self):
@@ -98,9 +107,9 @@ class RetargetTest(unittest.TestCase):
         self.assertIn("group: x86-e2e-required-gate-${{ github.event.pull_request.number }}"
                       "-${{ github.event.pull_request.head.sha }}", retarget)
         self.assertIn("cancel-in-progress: false", retarget)
-        self.assertNotIn("uses:", retarget)
+        self.assertIn("ref: ${{ github.workflow_sha }}\n          persist-credentials: false", retarget)
         self.assertEqual(set(re.findall(r"^      ([\w-]+: (?:read|write))$", retarget, re.M)),
-                         {"pull-requests: read", "checks: write"})
+                         {"contents: read", "issues: write", "pull-requests: read", "checks: write"})
         for variable, field in [("EDITED_AT", "updated_at"), ("PR_NUMBER", "number"), ("HEAD_SHA", "head.sha")]:
             self.assertIn(f"{variable}: ${{{{ github.event.pull_request.{field} }}}}", retarget)
         self.assertIn("github.event_name == 'schedule'", jobs["discover"].split("    runs-on:")[0])
@@ -113,8 +122,9 @@ class RetargetTest(unittest.TestCase):
         self.assertIn("needs.gate.outputs.mutate == 'true' || needs.approval.outputs.mutate == 'true'", mutate)
         self.assertIn("cancel-in-progress: false", mutate)
         self.assertNotIn("EDITED_AT:", mutate)
-        self.assertEqual(retarget.split("    steps:\n", 1)[1].splitlines()[0], "      - &reconcile_target")
-        self.assertEqual(mutate.split("    steps:\n", 1)[1].splitlines()[0], "      - *reconcile_target")
+        self.assertIn("      - &reconcile_target\n", retarget)
+        self.assertIn("run: python3 -I hack/e2e_invalidate.py", retarget)
+        self.assertTrue(mutate.split("    steps:\n")[1].startswith("      - *checkout_control\n      - *reconcile_target\n"))
         for variable, field in [("PR_NUMBER", "prNumber"), ("HEAD_SHA", "headSHA")]:
             source = "needs.gate.outputs.mutate == 'true' && needs.gate.outputs." + field
             value = "${{ " + source + " || needs.approval.outputs." + field + " }}"
@@ -141,12 +151,12 @@ class RetargetTest(unittest.TestCase):
         older = dict(EDIT, created_at="2026-11-19T08:00:00Z")
         self.assertFalse(self.run_handler([self.check], timeline=[[older], [EDIT, COMMAND]]))
 
-    def test_release_refresh_uses_legacy_dispatch_schema_and_can_only_invalidate(self):
+    def test_release_refresh_addresses_only_the_dedicated_receiver(self):
         dispatcher = (WORKFLOWS / "x86-e2e-dispatcher.yaml").read_text()
         refresh = dispatcher.split("\n  invalidate-base:\n")[1].split("\n  dispatch:\n")[0]
         post = refresh[refresh.index("gh api --method POST"):refresh.index("done < open-pulls.tsv")]
-        # Capture the actual gh arguments. The old default-branch gate (a9beb961)
-        # requires these nine inputs; its only optional input is executorRunID.
+        self.assertLess(refresh.index("bash hack/verify-e2e-receiver-v1.sh"), refresh.index(post))
+        self.assertNotIn("x86-e2e-gate.yaml", refresh)
         with tempfile.TemporaryDirectory() as directory:
             event = Path(directory, "event.json")
             event.write_text(json.dumps({"repository": {"default_branch": "main"}}))
@@ -156,28 +166,76 @@ class RetargetTest(unittest.TestCase):
                          GITHUB_REPOSITORY="org/repo", prNumber="7", headSHA=HEAD,
                          GITHUB_SHA=BASE, catalogRevision="b" * 64), text=True,
             ).splitlines()
-        self.assertEqual(args[:4], ["api", "--method", "POST", "repos/org/repo/actions/workflows/x86-e2e-gate.yaml/dispatches"])
-        self.assertEqual(args[4::2], ["-f"] * 10)
+        self.assertEqual(args[:4], ["api", "--method", "POST", "repos/org/repo/actions/workflows/x86-e2e-invalidate-v1.yaml/dispatches"])
+        self.assertEqual(args[4::2], ["-f"] * 3)
         fields = dict(field.split("=", 1) for field in args[5::2])
         self.assertEqual(fields, {
-            "ref": "main", "inputs[prNumber]": "7", "inputs[headSHA]": HEAD, "inputs[baseSHA]": BASE,
-            "inputs[approvalGeneration]": "1", "inputs[catalogRevision]": "b" * 64,
-            "inputs[requestedGroups]": "[]", "inputs[full]": "false",
-            "inputs[recordIntent]": "false", "inputs[baseRefresh]": "true",
+            "ref": "main", "inputs[prNumber]": "7", "inputs[headSHA]": HEAD,
         })
-        declarations = WORKFLOW.split("\n    inputs:\n", 1)[1].split("\npermissions:", 1)[0]
+        receiver = (WORKFLOWS / "x86-e2e-invalidate-v1.yaml").read_text()
+        declarations = receiver.split("\n    inputs:\n", 1)[1].split("\npermissions:", 1)[0]
         required = re.findall(r"^      (\w+):\n(?:        [^\n]*\n)*?        required: true$", declarations, re.M)
         self.assertEqual({f"inputs[{name}]" for name in required}, fields.keys() - {"ref"})
         job, approval = WORKFLOW.split("\n  base-refresh:\n")[1].split("\n  approval:\n")
         self.assertIn("inputs.executorRunID == '' && inputs.baseRefresh", job)
         self.assertIn("group: x86-e2e-required-gate-${{ inputs.prNumber }}-${{ inputs.headSHA }}", job)
-        self.assertEqual(job.split("    steps:\n")[1].strip(), "- *reconcile_target")
+        self.assertEqual(job.split("    steps:\n")[1].strip(), "- *checkout_control\n      - *reconcile_target")
+        self.assertEqual(re.findall(r"^  ([\w-]+):$", receiver.split("\njobs:\n")[1], re.M), ["invalidate"])
+        self.assertEqual(re.findall(r"^        run: (.+)$", receiver, re.M), ["python3 -I hack/e2e_invalidate.py"])
+        self.assertEqual(re.findall(r"^  ([\w-]+): write$", receiver, re.M), ["checks"])
+        self.assertIn("queue: max", receiver)
         self.assertIn("!inputs.baseRefresh", approval.split("    outputs:")[0])
         self.assertIn("!inputs.baseRefresh && inputs.executorRunID != ''", WORKFLOW)
         # A previous approval for the same head and branch cannot preserve an old base SHA.
         self.check["output"]["text"] = f"{MARKER}\n{TARGET.replace(BASE, '3' * 40)}"
-        update, = self.run_handler([self.check], edited_at=None)
+        catalog = selector.loadCatalog(WORKFLOWS.parent / "e2e-selection.json")
+        intent = control.renderApprovalIntent({
+            "headSHA": HEAD, "baseSHA": BASE, "baseRef": self.pr["base"]["ref"],
+            "catalogRevision": selector.catalogRevision(catalog), "approvalGeneration": COMMAND["id"],
+            "requestedGroups": [], "full": False,
+        })
+        pending = dict(RECORDED, body=intent)
+        self.assertEqual(len(control.approvalIntents(self.pr, catalog, [[COMMAND, pending]])), 1)
+        update, = self.run_handler([self.check], timeline=[[COMMAND, pending]], edited_at=None)
         self.assertEqual(update.kwargs["body"]["conclusion"], "action_required")
+        self.assertEqual(len(self.api.call_args_list), 3)  # Read check and live PR, then PATCH the check.
+        self.check["output"]["text"] = f"{MARKER}\n{TARGET}"
+        self.assertFalse(self.run_handler([self.check], timeline=[[COMMAND, pending]], edited_at=None))
+
+    def test_release_requires_active_versioned_receiver_on_default_branch(self):
+        root = WORKFLOWS.parents[1]
+        selection = (WORKFLOWS / "build-x86-image.yaml").read_text()
+        self.assertIn('git show "refs/remotes/origin/$DEFAULT_BRANCH:hack/verify-e2e-receiver-v1.sh" | bash', selection)
+        with tempfile.TemporaryDirectory() as folder:
+            work = Path(folder)
+            paths = (".github/workflows/x86-e2e-invalidate-v1.yaml", "hack/e2e_invalidate.py")
+            (work / "event.json").write_text(json.dumps({"repository": {"default_branch": "main"}}))
+            gh = work / "gh"
+            gh.write_text("""#!/bin/bash
+set -eu
+case "$2" in
+  repos/org/repo/git/ref/heads/main) echo "$TREE" ;;
+  repos/org/repo/contents/*)
+    path=${2#repos/org/repo/contents/}
+    [[ "$path" == *"?ref=$TREE" ]] || exit 1
+    path=${path%\\?ref=*}
+    [[ "$MODE" != "$path" ]] || exit 1
+    jq -n --arg path "$path" '{path: $path, type: "file", size: 900}' ;;
+  repos/org/repo/actions/workflows/x86-e2e-invalidate-v1.yaml)
+    jq -n --arg state "$MODE" '{path: ".github/workflows/x86-e2e-invalidate-v1.yaml", state: $state}' ;;
+  *) exit 2 ;;
+esac
+""")
+            gh.chmod(0o755)
+            for mode in (*paths, "disabled_manually", "active"):
+                with self.subTest(mode=mode):
+                    result = subprocess.run(
+                        ["bash", str(root / "hack/verify-e2e-receiver-v1.sh")], cwd=work,
+                        env=dict(os.environ, PATH=f"{work}:{os.environ['PATH']}", GITHUB_REPOSITORY="org/repo",
+                                 GITHUB_EVENT_PATH=str(work / "event.json"), MODE=mode, TREE=BASE),
+                        capture_output=True, text=True,
+                    )
+                    self.assertEqual(result.returncode == 0, mode == "active", result.stderr)
 
     def test_unsuccessful_recorder_invalidates_even_fresh_green_once(self):
         self.check["output"]["text"] = f"{MARKER}\n{TARGET}"
@@ -189,8 +247,52 @@ class RetargetTest(unittest.TestCase):
                 body = patch.kwargs["body"]
                 self.assertEqual((body["status"], body["conclusion"]), ("completed", "action_required"))
                 self.assertEqual(body["output"]["text"], self.check["output"]["text"])
-                self.assertFalse(any("timeline" in call.args[0] for call in self.api.call_args_list))
-                self.assertFalse(self.run_handler([dict(self.check, **body)], recorder_result=result))
+                self.assertFalse(self.run_handler([dict(self.check, **body)], timeline=[[EDIT]], recorder_result=result))
+                self.assertEqual(len(self.comments), 2)
+
+    def test_failed_edits_while_waiting_survive_old_writes_and_rearm(self):
+        self.check["output"]["text"] = f"{MARKER}\n{TARGET}"
+        self.check["conclusion"] = "action_required"
+        self.check["output"]["summary"] = "The latest authorized x86 E2E approval is waiting for its trusted executor."
+        edits = [EDIT["created_at"], "2026-11-20T08:02:00Z"]
+        for index, stamp in enumerate(edits):
+            if index:
+                self.check["output"]["summary"] = control.invalidationSummary
+                self.check["completed_at"] = self.now
+            self.now = f"2026-11-20T08:0{index * 2 + 1}:00Z"
+            updates = self.run_handler([self.check], timeline=[[]], edited_at=stamp, recorder_result="failure")
+            self.assertEqual(bool(updates), index == 0)
+            if updates:
+                self.check.update(updates[0].kwargs["body"])
+            self.assertEqual(self.comments[-1]["body"], f"<!-- x86-e2e-retarget edited_at={self.now} -->")
+        # A 52c4318 writer replaced the whole check; only comments retain the cutoff.
+        self.check["conclusion"] = "success"
+        self.check["output"]["summary"] = "Passed"
+        for when, stale in [(edits[1], True), (self.now, True), ("2026-11-20T08:03:01Z", False)]:
+            timeline = [[dict(COMMAND, created_at=when)]]
+            def api(path, paginate):
+                return [{"check_runs": [self.check]}] if path.startswith("commits/") else [*timeline, self.comments]
+            self.assertEqual(bool(recovery.staleTarget([self.pr], api)), stale)
+            for delivery in [None, *edits]:
+                patches = self.run_handler([self.check], timeline=timeline, edited_at=delivery, recorder_result="failure")
+                self.assertEqual(bool(patches), stale)
+                self.assertEqual(len(self.comments), 4)
+        self.check["conclusion"] = "action_required"
+        self.check["output"]["summary"] = "The latest authorized x86 E2E approval is waiting for its trusted executor."
+        fresh = [[dict(COMMAND, created_at="2026-11-20T08:03:01Z")]]
+        self.assertFalse(self.run_handler([self.check], timeline=fresh, edited_at=edits[0], recorder_result="failure"))
+        self.assertEqual(len(self.comments), 4)
+
+    def test_legacy_sibling_cutoff_matches_discovery(self):
+        self.check["output"]["text"] = f"{MARKER}\n{TARGET}"
+        blocked = dict(self.check, id=18, conclusion="action_required",
+                       output=dict(self.check["output"], summary=control.invalidationSummary))
+        for completed, stale in [(EDIT["created_at"], False), (COMMAND["created_at"], True), (None, True)]:
+            checks = [self.check, dict(blocked, completed_at=completed)]
+            def api(path, paginate):
+                return [{"check_runs": checks}] if path.startswith("commits/") else [[COMMAND]]
+            self.assertEqual(bool(recovery.staleTarget([self.pr], api)), stale)
+            self.assertEqual(bool(self.run_handler(checks, timeline=[[COMMAND]], edited_at=None)), stale)
 
     def test_normal_mutation_green_without_any_target_edit(self):
         self.check["output"]["text"] = f"{MARKER}\n{TARGET}"

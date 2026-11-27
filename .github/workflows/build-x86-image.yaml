@@ -116,6 +116,7 @@ jobs:
     if: github.event_name != 'workflow_dispatch' || github.actor == 'github-actions[bot]'
     runs-on: ubuntu-24.04
     permissions:
+      actions: read
       contents: read
       pull-requests: read
     env:
@@ -315,6 +316,16 @@ jobs:
           echo "forceFull=$forceFull" >> "$GITHUB_OUTPUT"
           echo "forceFullReason=$forceFullReason" >> "$GITHUB_OUTPUT"
           echo "requestedGroups=$requestedGroups" >> "$GITHUB_OUTPUT"
+
+      - name: Require the installed main receiver before enabling a release sender
+        if: startsWith(steps.context.outputs.baseRef, 'release-')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          # The target branch may predate this check. Execute only the trusted default-branch verifier.
+          git show "refs/remotes/origin/$DEFAULT_BRANCH:hack/verify-e2e-receiver-v1.sh" | bash
 
       - name: Compute the selection plan
         env:

@@ -24,6 +24,25 @@ run builds and pushes the new base tags before it builds the `fabric` image.
 Pull request CI builds the base image only when the base inputs change.
 Other CI runs pull the published tags with `make pull-base`.
 
+## x86 E2E gate rollout
+
+1. Drain gate and dispatcher runs from the old revision, including queued
+   retries. Do not rerun old workflow revisions during rollout.
+2. Install `.github/workflows/x86-e2e-invalidate-v1.yaml`, its control code,
+   the verifier, gate and sender together on `main`. Enable the v1 workflow.
+3. Only then create numeric release branches from upgraded code, or upgrade an
+   existing release through its normal PR checks. The release selection check
+   and push sender verify the active v1 receiver on `main`. An old release
+   sender still addresses its old gate; installing a receiver cannot redirect it.
+
+Keep the v1 endpoint and verifier available until all v1 senders are retired.
+Introduce incompatible changes under a new endpoint version.
+
+If the receiver was disabled or rollout was interrupted, restore it first,
+then rerun the failed base-update sender to reconcile existing fixed checks.
+Upgrade the branch-bound executor and catalog on each release before accepting
+fresh approvals there.
+
 ## Cut a release
 
 1. Set the new version in `VERSION`, for example `v1.1.0`.

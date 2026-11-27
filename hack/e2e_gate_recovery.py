@@ -10,20 +10,6 @@ import e2e_control as e2eControl
 from e2e_target_history import TargetHistory
 
 
-def fixedChecks(prNumber, headSHA, api):
-    pages = api(
-        f"commits/{headSHA}/check-runs?check_name=x86-e2e%20%2F%20required-gate&filter=all&per_page=100",
-        paginate=True,
-    )
-    return [
-        check for page in pages for check in page["check_runs"]
-        if check["name"] == "x86-e2e / required-gate"
-        and (check.get("app") or {}).get("slug") == "github-actions"
-        and check["head_sha"] == headSHA
-        and check.get("external_id") == f"x86-e2e-pr-{prNumber}-{headSHA}"
-    ]
-
-
 def checkGeneration(check, base):
     target = f"x86-e2e-target base={base['sha']} ref={base['ref']}"
     lines = (check["output"].get("text") or "").splitlines()
@@ -34,19 +20,27 @@ def checkGeneration(check, base):
     return int(match[1]) if match else None
 
 
-def targetHistory(prNumber, api):
-    return TargetHistory(api(f"issues/{prNumber}/timeline?per_page=100", paginate=True))
+def freshCheckGeneration(check, base, prNumber, api, checks):
+    try:
+        generation = checkGeneration(check, base)
+        if generation:
+            pages = api(f"issues/{prNumber}/timeline?per_page=100", paginate=True)
+            if TargetHistory(pages, checks).is_fresh(generation):
+                return generation
+    except (subprocess.CalledProcessError, OSError, ValueError, KeyError, TypeError, AttributeError):
+        # The locked writer rereads the evidence and downgrades if it still cannot verify it.
+        return None
+    return None
 
 
 def staleTarget(pulls, api):
     for pr in pulls:
         head = pr["head"]["sha"]
-        for check in fixedChecks(pr["number"], head, api):
+        checks = e2eControl.fixedChecks(pr["number"], head, api)
+        for check in checks:
             if check.get("conclusion") not in {"success", "neutral", "skipped"}:
                 continue
-            generation = checkGeneration(check, pr["base"])
-            if (check["conclusion"] != "success" or not generation
-                    or not targetHistory(pr["number"], api).is_fresh(generation)):
+            if check["conclusion"] != "success" or not freshCheckGeneration(check, pr["base"], pr["number"], api, checks):
                 return pr["number"], head
     return None
 
@@ -75,14 +69,14 @@ def pendingExecutor(runs, repository, api):
             or pullRequest["base"]["sha"] != run.get("head_sha")
         ):
             continue
-        gateChecks = fixedChecks(metadata["prNumber"], metadata["headSHA"], api)
+        gateChecks = e2eControl.fixedChecks(metadata["prNumber"], metadata["headSHA"], api)
         check = max(gateChecks, key=lambda item: item["id"], default={})
         if (
             check.get("conclusion") == "action_required"
             and check.get("output", {}).get("summary")
             == "The latest authorized x86 E2E approval is waiting for its trusted executor."
-            and checkGeneration(check, pullRequest["base"]) == metadata["approvalGeneration"]
-            and targetHistory(metadata["prNumber"], api).is_fresh(metadata["approvalGeneration"])
+            and freshCheckGeneration(check, pullRequest["base"], metadata["prNumber"], api, gateChecks)
+            == metadata["approvalGeneration"]
         ):
             return run["id"]
     return None
@@ -97,18 +91,19 @@ def main():
             subprocess.check_output(["gh", "api", *flags, f"repos/{repository}/{path}"], text=True)
         )
 
-    runs = api(
-        "actions/workflows/build-x86-image.yaml/runs"
-        "?event=workflow_dispatch&status=completed&per_page=100"
-    )["workflow_runs"]
-    runId = pendingExecutor(runs, repository, api)
     pages = api("pulls?state=open&per_page=100", paginate=True)
     stale = staleTarget((pr for page in pages for pr in page), api)
     with open(os.environ["GITHUB_OUTPUT"], "a") as stream:
-        if runId is not None:
-            stream.write(f"runId={runId}\n")
         if stale:
             stream.write(f"stalePR={stale[0]}\nstaleHead={stale[1]}\n")
+            return
+        runs = api(
+            "actions/workflows/build-x86-image.yaml/runs"
+            "?event=workflow_dispatch&status=completed&per_page=100"
+        )["workflow_runs"]
+        runId = pendingExecutor(runs, repository, api)
+        if runId is not None:
+            stream.write(f"runId={runId}\n")
 
 
 if __name__ == "__main__":

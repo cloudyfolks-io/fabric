@@ -10,6 +10,8 @@ import e2e_selector as e2eSelector
 
 
 groupPattern = r"[a-z0-9]+(?:-[a-z0-9]+)*"
+invalidationSummary = "Pull request target changed; authorize x86 E2E again for the current target."
+cutoffPrefix = "x86-e2e-invalidated-at "
 unsupportedBaseRef = "unsupported x86 E2E base branch: expected main or release-<major>.<minor>"
 
 
@@ -28,6 +30,20 @@ def supportedBaseRef(ref):
 
 def canonicalRequestedGroups(requestedGroups, full):
     return [] if full else sorted(set(requestedGroups))
+
+
+def fixedChecks(prNumber, headSHA, api):
+    pages = api(
+        f"commits/{headSHA}/check-runs?check_name=x86-e2e%20%2F%20required-gate&filter=all&per_page=100",
+        paginate=True,
+    )
+    return [
+        check for page in pages for check in page["check_runs"]
+        if check["name"] == "x86-e2e / required-gate"
+        and (check.get("app") or {}).get("slug") == "github-actions"
+        and check["head_sha"] == headSHA
+        and check.get("external_id") == f"x86-e2e-pr-{prNumber}-{headSHA}"
+    ]
 
 
 def parseCommand(body):
@@ -511,6 +527,17 @@ def executorHeadBranch(request):
     )
 
 
+def matchesExecutorCheck(check, metadata):
+    output = check.get("output") or {}
+    if (output.get("summary") or "").splitlines()[:1] == [invalidationSummary]:
+        return False
+    lines = (output.get("text") or "").splitlines()
+    marker = f"x86-e2e-gate request={executorRequestKey(metadata)} approval={metadata['approvalGeneration']}"
+    target = f"x86-e2e-target base={metadata['baseSHA']} ref={metadata['baseRef']}"
+    return ([line for line in lines if line.startswith("x86-e2e-gate")] == [marker]
+            and [line for line in lines if line.startswith("x86-e2e-target ")] == [target])
+
+
 def latestExecutorRun(
     runs,
     prNumber,
@@ -520,6 +547,7 @@ def latestExecutorRun(
     workflowSHA=None,
     *,
     freshGenerations,
+    currentCheck=None,
 ):
     if not supportedBaseRef(baseRef):
         return None
@@ -541,7 +569,30 @@ def latestExecutorRun(
             and metadata["baseRef"] == baseRef
             and metadata["approvalGeneration"] in freshGenerations
         ):
+            if currentCheck is not None and not matchesExecutorCheck(
+                currentCheck, dict(metadata, baseSHA=run["head_sha"], catalogRevision=catalogRevision)
+            ):
+                continue
             return run
+    return None
+
+
+def duplicateExecutor(runs, request, pages, freshGenerations, *, currentCheck, recorded=False):
+    run = latestExecutorRun(
+        runs, request["prNumber"], request["headSHA"], request["baseRef"],
+        request["catalogRevision"], request["baseSHA"], freshGenerations=freshGenerations, currentCheck=currentCheck,
+    )
+    if run is None or not isAuthorizedRunAttempt(run, pages, request["headSHA"], request["baseSHA"]):
+        return None
+    metadata = parseExecutorRunName(run["display_title"])
+    metadata.update(baseSHA=run["head_sha"], catalogRevision=request["catalogRevision"])
+    if executorRequestKey(metadata) != request["requestKey"]:
+        return None
+    if run.get("status") != "completed" or run.get("conclusion") in {"success", "failure"}:
+        return run
+    # Redelivery of the recorded approval must not retry a cancelled executor.
+    if recorded and metadata["approvalGeneration"] >= request["approvalGeneration"]:
+        return run
     return None
 
 

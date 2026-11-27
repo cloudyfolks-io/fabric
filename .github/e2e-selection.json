@@ -16,6 +16,8 @@
     "hack/e2e_selector.py",
     "hack/e2e_control.py",
     "hack/e2e_target_history.py",
+    "hack/e2e_invalidate.py",
+    "hack/verify-e2e-receiver-v1.sh",
     "hack/test_e2e_selector.py",
     "hack/test_e2e_control.py",
     "Makefile",

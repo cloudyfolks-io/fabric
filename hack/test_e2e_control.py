@@ -135,16 +135,20 @@ class E2EControlTest(unittest.TestCase):
     def testGateRejectsRetargetBeforeWritingRecoveredSuccess(self):
         import os
         workflow = (repoRoot / ".github/workflows/x86-e2e-gate.yaml").read_text()
-        # Exercise the actual last guard, including a retarget at the same SHA.
-        start = workflow.index('if ! jq -e --arg ref "$BASE_REF" \'.base.ref == $ref\' write-pull-request.json')
-        end = workflow.index('if [ "$writeBase" != "$BASE_SHA" ]', start)
-        self.assertLess(end, workflow.index("check-runs/$checkId", end))
+        # Both guards must leave the mixed reducer on a target change, even at the same SHA.
         with tempfile.TemporaryDirectory() as tmp:
-            for ref in ("release-1.13", "main", "release-next", "release-1.13\n"):
-                (Path(tmp) / "write-pull-request.json").write_text(json.dumps({"base": {"ref": ref}}))
-                result = subprocess.run(["bash", "-eu", "-c", workflow[start:end]], cwd=tmp,
-                                        env=dict(os.environ, BASE_REF="release-1.13"), capture_output=True)
-                self.assertEqual(result.returncode == 0, ref == "release-1.13", ref)
+            for field, filename in (("currentBaseSHA", "final-pull-request.json"), ("writeBase", "write-pull-request.json")):
+                start = workflow.index(f'if [ "${field}" != "$BASE_SHA" ]')
+                end = workflow.index("          fi\n", start) + len("          fi\n")
+                self.assertLess(end, workflow.index("check-runs/$checkId", end))
+                script = 'python3() { echo "$*"; }\n' + workflow[start:end] + "echo continue"
+                for ref, sha in (("release-1.13", "a"), ("main", "a"), ("release-next", "a"),
+                                 ("release-1.13\n", "a"), ("release-1.13", "b")):
+                    (Path(tmp) / filename).write_text(json.dumps({"base": {"ref": ref}}))
+                    result = subprocess.check_output(["bash", "-eu", "-c", script], cwd=tmp, text=True,
+                                                     env=dict(os.environ, BASE_REF="release-1.13", BASE_SHA="a", **{field: sha}))
+                    expected = "continue" if ref == "release-1.13" and sha == "a" else "-I hack/e2e_invalidate.py"
+                    self.assertEqual(result.strip(), expected)
 
     def testUnrelatedCommentProducesNoDecision(self):
         self.assertIsNone(self.dispatchDecision(body="looks good"))
@@ -640,8 +644,8 @@ class E2EControlTest(unittest.TestCase):
         self.assertIn("pull_request_target:\n    types: [synchronize, closed]", workflow)
         self.assertIn("push:\n    branches:", workflow)
         self.assertIn("name: Invalidate x86 E2E gates after a base update", workflow)
-        self.assertIn("inputs[baseRefresh]=true", workflow)
-        self.assertIn("inputs[baseSHA]=$GITHUB_SHA", workflow)
+        self.assertNotIn("inputs[baseRefresh]=true", workflow)
+        self.assertIn("actions/workflows/x86-e2e-invalidate-v1.yaml/dispatches", workflow)
         self.assertIn("actions: write", workflow)
         self.assertIn("checks: read", workflow)
         self.assertNotIn("checks: write", workflow)
@@ -675,7 +679,8 @@ class E2EControlTest(unittest.TestCase):
             workflow.index("actions/runs/$runId/rerun-failed-jobs"),
         )
         self.assertIn("hasAuthorizedRerun(pages, *sys.argv[1:])", workflow)
-        self.assertGreaterEqual(workflow.count("isAuthorizedRunAttempt"), 4)
+        self.assertEqual(workflow.count("duplicateExecutor("), 2)
+        self.assertGreaterEqual(workflow.count("isAuthorizedRunAttempt"), 2)
         self.assertIn("pre-marker-comments.json", workflow)
         self.assertLess(
             workflow.index("pre-marker-comments.json"),
@@ -751,11 +756,11 @@ class E2EControlTest(unittest.TestCase):
         self.assertIn('[ "$liveBaseSHA" != "$BASE_SHA" ]', workflow)
         self.assertIn('metadata["executorHeadBranch"] = e2eControl.executorHeadBranch(metadata)', workflow)
         self.assertIn('[ "$RUN_HEAD_BRANCH" != "$expectedExecutorRef" ]', workflow)
-        self.assertIn("authorizedAttempt = e2eControl.isAuthorizedRunAttempt", workflow)
+        self.assertIn("latest = e2eControl.duplicateExecutor(", workflow)
         self.assertIn("currentBaseSHA=$(jq -r '.base.sha' final-pull-request.json)", workflow)
-        self.assertIn("RUN_ACTION=base_refresh", workflow)
+        self.assertNotIn("RUN_ACTION=base_refresh", workflow)
         self.assertIn("write-pull-request.json", workflow)
-        self.assertIn("if [ \"$writeBase\" != \"$BASE_SHA\" ]; then", workflow)
+        self.assertIn('if [ "$writeBase" != "$BASE_SHA" ] ||', workflow)
         self.assertLess(
             workflow.index("write-pull-request.json"),
             workflow.index('gh api --method PATCH "repos/$GITHUB_REPOSITORY/check-runs/$checkId"'),
@@ -805,7 +810,7 @@ class E2EControlTest(unittest.TestCase):
         self.assertNotIn("inputs.headSHA || github.sha", workflow)
         self.assertNotIn("contents: write", workflow)
 
-    def testGateReservationSkipsNonResultExecutorRecovery(self):
+    def testGateApprovalAndReservationSkipNonResultExecutorRecovery(self):
         workflow = (repoRoot / ".github/workflows/x86-e2e-gate.yaml").read_text()
         start = workflow.index('if [ "$recoverLatest" = true ]')
         end = workflow.index("; then", start)
@@ -831,7 +836,8 @@ class E2EControlTest(unittest.TestCase):
             ("reservation", "success", "true", "recover"),
             ("reservation", "failure", "true", "recover"),
             ("reservation", "success", "false", "skip"),
-            ("approval", "cancelled", "true", "recover"),
+            ("approval", "cancelled", "true", "skip"),
+            ("approval", "success", "true", "recover"),
             ("completed", "cancelled", "true", "recover"),
         ]:
             with self.subTest(action=action, conclusion=conclusion, eligible=eligible):
@@ -854,7 +860,7 @@ class E2EControlTest(unittest.TestCase):
         self.assertIn("workflow_dispatch:", workflow)
         self.assertRegex(
             blocks["e2e-selection"],
-            r"(?m)^    permissions:\n      contents: read\n      pull-requests: read\n(?=    \S)",
+            r"(?m)^    permissions:\n      actions: read\n      contents: read\n      pull-requests: read\n(?=    \S)",
         )
         self.assertEqual(workflow.count("pull-requests:"), 1)
         self.assertIn(
