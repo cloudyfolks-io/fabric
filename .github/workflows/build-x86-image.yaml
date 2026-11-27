@@ -1,6 +1,6 @@
 name: Build x86 Image
 
-run-name: ${{ github.event_name == 'workflow_dispatch' && format('x86-e2e pr={0} head={1} approval={2} generation={3} groups={4} full={5}', inputs.prNumber, inputs.headSHA, inputs.approvalGeneration, inputs.dispatchGeneration, inputs.requestedGroupNames, inputs.full && '1' || '0') || '' }}
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('x86-e2e pr={0} head={1} approval={2} generation={3} groups={4} full={5} ref={6}', inputs.prNumber, inputs.headSHA, inputs.approvalGeneration, inputs.dispatchGeneration, inputs.requestedGroupNames, inputs.full && '1' || '0', inputs.baseRef) || '' }}
 
 permissions:
   contents: read
@@ -13,7 +13,7 @@ defaults:
       -u ACTIONS_CACHE_URL -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL
       -u LD_PRELOAD -u LD_LIBRARY_PATH -u BASH_ENV -u ENV -u PYTHONPATH -u PYTHONHOME
       -u NODE_OPTIONS -u PERL5OPT -u RUBYOPT -u GIT_CONFIG_COUNT
-      python3 -c "import os,pathlib,shutil,subprocess,sys,tempfile;
+      python3 -I -c "import os,pathlib,shutil,subprocess,sys,tempfile;
       realEnv=os.environ['GITHUB_ENV']; shadowDir=tempfile.mkdtemp();
       os.environ['GITHUB_ENV']=shadowDir+'/env'; os.environ['GITHUB_PATH']=shadowDir+'/path';
       pathlib.Path(os.environ['GITHUB_ENV']).touch(); pathlib.Path(os.environ['GITHUB_PATH']).touch();
@@ -50,6 +50,10 @@ on:
         type: string
       baseSHA:
         description: Exact trusted pull request base SHA
+        required: true
+        type: string
+      baseRef:
+        description: Exact pull request target branch
         required: true
         type: string
       approvalGeneration:
@@ -127,9 +131,18 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.baseSHA || github.sha }}
+          ref: ${{ github.event.pull_request.base.sha || github.workflow_sha }}
           persist-credentials: false
           fetch-depth: 0
+
+      - name: Fetch the exact PR head for the three-dot diff
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          git -c "http.extraHeader=AUTHORIZATION: basic $auth" fetch --no-tags origin "$PR_HEAD_SHA"
 
       - name: Initialize fail-closed conformance matrices
         id: fallbackMatrices
@@ -145,6 +158,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           INPUT_HEAD_SHA: ${{ inputs.headSHA }}
           INPUT_BASE_SHA: ${{ inputs.baseSHA }}
+          INPUT_BASE_REF: ${{ inputs.baseRef }}
           INPUT_PR_NUMBER: ${{ inputs.prNumber }}
           INPUT_REQUESTED_GROUPS: ${{ inputs.requestedGroups }}
           INPUT_REQUESTED_GROUP_NAMES: ${{ inputs.requestedGroupNames }}
@@ -161,15 +175,24 @@ jobs:
           forceFullReason=''
           requestedGroups='[]'
           headSHA="$GITHUB_SHA"
-          if [ "$EVENT_NAME" != workflow_dispatch ]; then
-            baseRef=$(python3 hack/e2e_control.py base-ref --ref="${GITHUB_BASE_REF:-$GITHUB_REF_NAME}")
+          baseRef="${GITHUB_BASE_REF:-$GITHUB_REF_NAME}"
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then
+            baseRef="$INPUT_BASE_REF"
           fi
+          # The trusted checkout may predate the base-ref CLI.
+          python3 -I - "$baseRef" <<'PY'
+          import re
+          import sys
+
+          ref = sys.argv[1]
+          if ref != "main":
+              match = re.fullmatch(r"release-(0|[1-9][0-9]*)\.([0-9]+)", ref)
+              if not match or any(len(n) > 20 or int(n) >= (1 << 64)
+                                  for n in (part.lstrip("0") or "0" for part in match.groups())):
+                  raise SystemExit("unsupported x86 E2E base branch")
+          PY
           prNumber=0
           checkedOutSHA=$(git rev-parse HEAD)
-          if [ "$EVENT_NAME" = workflow_dispatch ] && [ "$checkedOutSHA" != "$INPUT_BASE_SHA" ]; then
-            echo 'trusted selector checkout does not match the approved base revision' >&2
-            exit 1
-          fi
           if [ "$EVENT_NAME" = pull_request ]; then
             git diff --name-status --diff-filter=ACDMRT -z -M \
               "$PR_BASE_SHA...$PR_HEAD_SHA" > changed-name-status.bin
@@ -200,26 +223,31 @@ jobs:
             prNumber="$PR_NUMBER"
           elif [ "$EVENT_NAME" = workflow_dispatch ]; then
             gh api "repos/$GITHUB_REPOSITORY/pulls/$INPUT_PR_NUMBER" > pull-request.json
-            baseRef=$(python3 hack/e2e_control.py base-ref --pull-request-file pull-request.json)
-            python3 - "$INPUT_HEAD_SHA" "$INPUT_BASE_SHA" "$GITHUB_REF_NAME" "$GITHUB_SHA" "$INPUT_PR_NUMBER" <<'PY'
+            python3 -I - "$checkedOutSHA" <<'PY'
           import json
+          import os
           import re
           import sys
           from pathlib import Path
 
+          env = os.environ
+          base = env["INPUT_BASE_SHA"]
+          head = env["INPUT_HEAD_SHA"]
           pullRequest = json.loads(Path("pull-request.json").read_text())
           if pullRequest.get("state") != "open":
               raise SystemExit("pull request is not open")
-          if not re.fullmatch(r"[0-9a-f]{40}", sys.argv[1]):
+          if not re.fullmatch(r"[0-9a-f]{40}", head):
               raise SystemExit("invalid requested HEAD SHA")
-          if pullRequest["head"]["sha"] != sys.argv[1]:
+          if pullRequest["head"]["sha"] != head:
               raise SystemExit("pull request HEAD changed; dispatch again")
-          if pullRequest["base"]["sha"] != sys.argv[2]:
+          if pullRequest["base"]["sha"] != base or pullRequest["base"]["ref"] != env["INPUT_BASE_REF"]:
               raise SystemExit("pull request base revision changed; dispatch again")
-          if not re.fullmatch(rf"x86-e2e/pr-{sys.argv[5]}-a-[0-9]+-d-[0-9]+", sys.argv[3]):
+          if not re.fullmatch(rf"x86-e2e/pr-{env['INPUT_PR_NUMBER']}-a-[0-9]+-d-[0-9]+", env["GITHUB_REF_NAME"]):
               raise SystemExit("executor must run from its dispatched isolated ref")
-          if sys.argv[4] != sys.argv[2]:
+          if not re.fullmatch(r"[0-9a-f]{40}", base) or env["GITHUB_WORKFLOW_SHA"] != base or env["GITHUB_SHA"] != base:
               raise SystemExit("executor workflow revision does not match the approved base")
+          if sys.argv[1] != base:
+              raise SystemExit("trusted selector checkout does not match the approved base revision")
           pullRequest["labels"] = []
           Path("selector-event.json").write_text(json.dumps({"pull_request": pullRequest}))
           PY
@@ -282,6 +310,7 @@ jobs:
           fi
           echo "headSHA=$headSHA" >> "$GITHUB_OUTPUT"
           echo "baseRef=$baseRef" >> "$GITHUB_OUTPUT"
+          echo "baseSHA=$checkedOutSHA" >> "$GITHUB_OUTPUT"
           echo "prNumber=$prNumber" >> "$GITHUB_OUTPUT"
           echo "forceFull=$forceFull" >> "$GITHUB_OUTPUT"
           echo "forceFullReason=$forceFullReason" >> "$GITHUB_OUTPUT"
@@ -292,6 +321,8 @@ jobs:
           FORCE_FULL: ${{ steps.context.outputs.forceFull }}
           FORCE_FULL_REASON: ${{ steps.context.outputs.forceFullReason }}
           HEAD_SHA: ${{ steps.context.outputs.headSHA }}
+          BASE_REF: ${{ steps.context.outputs.baseRef }}
+          BASE_SHA: ${{ steps.context.outputs.baseSHA }}
           REQUESTED_GROUPS: ${{ steps.context.outputs.requestedGroups }}
         run: |
           args=(
@@ -300,13 +331,15 @@ jobs:
             --request-groups-json "$REQUESTED_GROUPS"
             --head-sha "$HEAD_SHA"
             --force-full-reason "$FORCE_FULL_REASON"
-            --plan-file e2e-selection-plan.json
+            --plan-file computed-plan.json
             --summary-file e2e-selection-summary.md
           )
           if [ "$FORCE_FULL" = true ]; then
             args+=(--label e2e:full)
           fi
           python3 hack/e2e_selector.py "${args[@]}"
+          jq --arg ref "$BASE_REF" --arg sha "$BASE_SHA" \
+            '. + {baseRef: $ref, baseSHA: $sha}' computed-plan.json > e2e-selection-plan.json
           cat e2e-selection-summary.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Export executor job IDs
@@ -346,8 +379,9 @@ jobs:
                   stream.write(name + "=" + json.dumps(matrix, separators=(",", ":")) + "\n")
           PY
 
-      - name: Validate the E2E control modules
-        run: python3 -m unittest hack/test_e2e_selector.py hack/test_e2e_control.py hack/test_e2e_fast_path.py
+      - name: Validate the trusted E2E control modules
+        if: github.event_name != 'pull_request'
+        run: python3 -m unittest discover -s hack -p 'test_e2e_*.py'
 
       - name: Upload the selection plan
         if: always()
@@ -359,6 +393,19 @@ jobs:
             e2e-selection-plan.json
             e2e-selection-summary.md
           retention-days: 30
+
+  e2e-control-tests:
+    name: x86 E2E Candidate Control Tests
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - run: python3 -m unittest discover -s hack -p 'test_e2e_*.py'
 
   build-fabric-base:
     name: Build fabric-base

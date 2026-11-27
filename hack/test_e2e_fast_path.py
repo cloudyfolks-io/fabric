@@ -13,7 +13,7 @@ class FastPathTest(unittest.TestCase):
         import textwrap
         workflow = (ROOT / ".github/workflows/build-x86-image.yaml").read_text()
         blocks = re.findall(r"<<'PY'\n(.*?)\n          PY", workflow, re.S)
-        self.assertEqual(len(blocks), 7)
+        self.assertEqual(len(blocks), 8)
         for index, block in enumerate(blocks):
             compile(textwrap.dedent(block), f"workflow-python-{index}", "exec")
 
@@ -170,17 +170,20 @@ class FastPathTest(unittest.TestCase):
         import os
         import textwrap
         workflow = (ROOT / ".github/workflows/build-x86-image.yaml").read_text()
+        context = textwrap.dedent(workflow.split("          headSHA=\"$GITHUB_SHA\"\n")[1].split("          prNumber=0")[0])
         dispatch = workflow.split('gh api "repos/$GITHUB_REPOSITORY/pulls/$INPUT_PR_NUMBER" > pull-request.json\n')[1]
-        validator = textwrap.dedent(dispatch.split("\n          PY\n")[0] + "\n          PY\n")
+        validator = context + textwrap.dedent(dispatch.split("            gh api --paginate")[0])
+        self.assertIn("ref: ${{ github.event.pull_request.base.sha || github.workflow_sha }}", workflow)
+        self.assertIn('fetch --no-tags origin "$PR_HEAD_SHA"', workflow)
         self.assertIn('echo "baseRef=$baseRef" >> "$GITHUB_OUTPUT"', workflow)
         self.assertIn("baseRef: ${{ steps.context.outputs.baseRef }}", workflow)
-        fallback = next(line.strip() for line in workflow.splitlines() if 'base-ref --ref=' in line)
         for pr_base, event_ref, expected in (("release-1.13", "48/merge", "release-1.13"),
                                               ("", "main", "main"), ("", "release-1.13", "release-1.13"),
                                               ("", "release-next", None), ("release-1.13\n", "48/merge", None)):
             result = subprocess.run(
-                ["bash", "-eu", "-c", fallback + '\nprintf "%s" "$baseRef"'], text=True, capture_output=True, cwd=ROOT,
-                env=dict(os.environ, GITHUB_BASE_REF=pr_base, GITHUB_REF_NAME=event_ref),
+                ["bash", "-eu", "-c", context + '\nprintf "%s" "$baseRef"'], text=True, capture_output=True,
+                env=dict(os.environ, EVENT_NAME="pull_request" if pr_base else "push",
+                         GITHUB_BASE_REF=pr_base, GITHUB_REF_NAME=event_ref),
             )
             if expected is None:
                 self.assertNotEqual(result.returncode, 0)
@@ -191,15 +194,16 @@ class FastPathTest(unittest.TestCase):
         head, base = "a" * 40, "b" * 40
         with tempfile.TemporaryDirectory() as tmp:
             request = {"state": "open", "head": {"sha": head}, "base": {"sha": base}}
-            (Path(tmp) / "hack").symlink_to(ROOT / "hack", target_is_directory=True)
-            env = dict(os.environ, INPUT_HEAD_SHA=head, INPUT_BASE_SHA=base, INPUT_PR_NUMBER="48",
-                       GITHUB_SHA=base, GITHUB_REF_NAME="x86-e2e/pr-48-a-1-d-2")
+            env = dict(os.environ, EVENT_NAME="workflow_dispatch", INPUT_HEAD_SHA=head, INPUT_BASE_SHA=base, INPUT_PR_NUMBER="48",
+                       GITHUB_SHA=base, GITHUB_WORKFLOW_SHA=base, checkedOutSHA=base,
+                       GITHUB_REF_NAME="x86-e2e/pr-48-a-1-d-2")
             command = ["bash", "-eu", "-c", validator + 'printf "%s" "$baseRef"']
             for branch, version in (("release-1.13", "1.13"), ("main", "999.999"), ("feature/test", None),
                                     ("release-next", None), ("release-1.13-mc", None), ("main\n", None)):
                 request["base"]["ref"] = branch
                 (Path(tmp) / "pull-request.json").write_text(json.dumps(request))
-                result = subprocess.run(command, cwd=tmp, env=env, capture_output=True, text=True)
+                result = subprocess.run(command, cwd=tmp, env=dict(env, INPUT_BASE_REF=branch),
+                                        capture_output=True, text=True)
                 if version is None:
                     self.assertNotEqual(result.returncode, 0)
                     continue
@@ -211,6 +215,54 @@ class FastPathTest(unittest.TestCase):
                     env=dict(os.environ, E2E_BRANCH=result.stdout.strip()), cwd=tmp,
                 )
                 self.assertEqual(parsed.strip(), version)
+            request["base"]["ref"] = "main"
+            (Path(tmp) / "pull-request.json").write_text(json.dumps(request))
+            for key, value in (("INPUT_BASE_REF", "release-1.13"), ("GITHUB_SHA", head),
+                               ("GITHUB_WORKFLOW_SHA", head), ("checkedOutSHA", head),
+                               ("INPUT_BASE_SHA", head), ("INPUT_HEAD_SHA", base)):
+                with self.subTest(key=key):
+                    settings = dict(env, INPUT_BASE_REF="main")
+                    settings[key] = value
+                    result = subprocess.run(command, cwd=tmp, env=settings, capture_output=True, text=True)
+                    self.assertNotEqual(result.returncode, 0)
+
+    def test_executed_plan_binds_base_even_on_fallback(self):
+        import json
+        import os
+        import sys
+        import textwrap
+        workflow = (ROOT / ".github/workflows/build-x86-image.yaml").read_text()
+        compute = workflow.split("      - name: Compute the selection plan\n")[1].split("\n      - name:")[0]
+        script = textwrap.dedent(compute.split("        run: |\n")[1])
+        with tempfile.TemporaryDirectory() as tmp:
+            checkout = Path(tmp)
+            (checkout / ".github").symlink_to(ROOT / ".github", target_is_directory=True)
+            (checkout / "hack").mkdir()
+            # Enforce the pre-rollout argument contract without needing Git history in CI.
+            (checkout / "hack/e2e_selector.py").write_text(textwrap.dedent(f"""\
+                import argparse
+                import runpy
+                parser = argparse.ArgumentParser(allow_abbrev=False)
+                for option in ('paths-file', 'event-file', 'request-groups-json', 'head-sha',
+                               'force-full-reason', 'plan-file', 'summary-file', 'label'):
+                    parser.add_argument('--' + option)
+                parser.parse_args()
+                runpy.run_path({str(ROOT / 'hack/e2e_selector.py')!r}, run_name='__main__')
+            """))
+            (checkout / "selector-event.json").write_text('{"pull_request":{"labels":[]}}')
+            env = dict(os.environ, HEAD_SHA="a" * 40, BASE_REF="release-1.13", BASE_SHA="b" * 40,
+                       FORCE_FULL="false", FORCE_FULL_REASON="", REQUESTED_GROUPS="[]", GITHUB_STEP_SUMMARY="summary")
+            for fallback in (True, False):
+                if not fallback:
+                    (checkout / "changed-paths.txt").write_bytes(b"")
+                subprocess.run(["bash", "-eu", "-c", script], cwd=tmp, env=env, check=True)
+                subprocess.run([sys.executable, str(ROOT / "hack/e2e_selector.py"), "--head-sha", env["HEAD_SHA"],
+                                "--paths-file", "changed-paths.txt", "--plan-file", "gate-plan.json",
+                                "--base-ref", env["BASE_REF"], "--base-sha", env["BASE_SHA"]], cwd=tmp, check=True)
+                result = json.loads((checkout / "e2e-selection-plan.json").read_text())
+                self.assertEqual(result, json.loads((checkout / "gate-plan.json").read_text()))
+                self.assertEqual((result["baseRef"], result["baseSHA"]), (env["BASE_REF"], env["BASE_SHA"]))
+                self.assertEqual(result["catalogRevision"] == "", fallback)
 
     def test_base_advance_preserves_source_and_rejects_wrong_build_or_restore(self):
         import os

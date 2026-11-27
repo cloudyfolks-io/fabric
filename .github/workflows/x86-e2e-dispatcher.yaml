@@ -97,7 +97,7 @@ jobs:
       - name: Check out the updated trusted base
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ github.workflow_sha }}
           persist-credentials: false
 
       - name: Block fixed gates bound to the previous base revision
@@ -119,17 +119,19 @@ jobs:
             --jq '.[] | [.number, .head.sha] | @tsv' > open-pulls.tsv
           while IFS=$'\t' read -r prNumber headSHA; do
             [ -n "$prNumber" ] || continue
-            hasGate=$(gh api \
+            hasGate=$(gh api --paginate --slurp \
               -H 'Accept: application/vnd.github+json' \
-              "repos/$GITHUB_REPOSITORY/commits/$headSHA/check-runs?check_name=x86-e2e%20%2F%20required-gate&per_page=100" \
-              | jq -r 'any(.check_runs[]; .name == "x86-e2e / required-gate")')
+              "repos/$GITHUB_REPOSITORY/commits/$headSHA/check-runs?check_name=x86-e2e%20%2F%20required-gate&filter=all&per_page=100" \
+              | jq -r --arg id "x86-e2e-pr-$prNumber-$headSHA" \
+                'any(.[].check_runs[]; .app.slug == "github-actions" and .external_id == $id)')
             [ "$hasGate" = true ] || continue
             gh api --method POST \
               "repos/$GITHUB_REPOSITORY/actions/workflows/x86-e2e-gate.yaml/dispatches" \
-              -f ref="$GITHUB_REF_NAME" \
+              -f ref="$(jq -r '.repository.default_branch' "$GITHUB_EVENT_PATH")" \
               -f "inputs[prNumber]=$prNumber" \
               -f "inputs[headSHA]=$headSHA" \
               -f "inputs[baseSHA]=$GITHUB_SHA" \
+              -f "inputs[baseRef]=$GITHUB_REF_NAME" \
               -f 'inputs[approvalGeneration]=1' \
               -f "inputs[catalogRevision]=$catalogRevision" \
               -f 'inputs[requestedGroups]=[]' \
@@ -163,7 +165,7 @@ jobs:
       - name: Check out the trusted default branch
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          ref: ${{ github.workflow_sha }}
           persist-credentials: false
 
       - name: Validate command, permission, and current HEAD
@@ -180,9 +182,14 @@ jobs:
             permission=none
           fi
           gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" > pull-request.json
-          baseRef=$(python3 hack/e2e_control.py base-ref --pull-request-file pull-request.json)
-          gh api "repos/$GITHUB_REPOSITORY/contents/.github/e2e-selection.json?ref=$baseRef" \
+          python3 hack/e2e_control.py base-ref --pull-request-file pull-request.json > /dev/null
+          baseSHA=$(jq -er '.base.sha' pull-request.json)
+          gh api "repos/$GITHUB_REPOSITORY/contents/.github/e2e-selection.json?ref=$baseSHA" \
             --jq '.content' | base64 --decode > trusted-catalog.json
+          if ! jq -e '.targetBindingVersion == 1' trusted-catalog.json > /dev/null; then
+            echo 'Target revision lacks the branch-bound executor; update its workflow and catalog, then authorize again.' >&2
+            exit 1
+          fi
           confirmedHead=$(gh api \
             "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" \
             --jq '.head.sha')
@@ -222,21 +229,22 @@ jobs:
           set -euo pipefail
           prNumber=$(jq -r '.prNumber' dispatch-decision.json)
           action=$(jq -r '.action' dispatch-decision.json)
+          baseRef=$(jq -r '.baseRef' dispatch-decision.json)
           headSHA=$(jq -r '.headSHA' dispatch-decision.json)
           baseSHA=$(jq -r '.baseSHA' dispatch-decision.json)
+          approvalGeneration=$(jq -r '.approvalGeneration' dispatch-decision.json)
+          python3 hack/e2e_target_history.py validate "$prNumber" "$approvalGeneration"
           gh api "repos/$GITHUB_REPOSITORY/pulls/$prNumber" > confirmed-pull-request.json
           confirmedHead=$(jq -r '.head.sha' confirmed-pull-request.json)
           confirmedBase=$(jq -r '.base.sha' confirmed-pull-request.json)
           if [ "$confirmedHead" != "$headSHA" ] || [ "$confirmedBase" != "$baseSHA" ] || \
-             ! jq -e --arg ref "$(jq -r '.baseRef' dispatch-decision.json)" '.base.ref == $ref' confirmed-pull-request.json > /dev/null; then
+             ! jq -e --arg ref "$baseRef" '.base.ref == $ref' confirmed-pull-request.json > /dev/null; then
             gh api "repos/$GITHUB_REPOSITORY/issues/$prNumber/comments" \
               -f body='x86 E2E request became stale before dispatch; comment again for the current HEAD and target revision.'
             exit 1
           fi
           if [ "$action" = dispatch ]; then
-            gh api --paginate --slurp \
-              "repos/$GITHUB_REPOSITORY/issues/$prNumber/comments?per_page=100" \
-              > admission-comments.json
+            python3 hack/e2e_target_history.py comments "$prNumber" --generations-file fresh-generations.json > admission-comments.json
             gh api --paginate --slurp \
               "repos/$GITHUB_REPOSITORY/actions/workflows/build-x86-image.yaml/runs?event=workflow_dispatch&per_page=100" \
               > admission-run-pages.json
@@ -264,10 +272,11 @@ jobs:
               request["baseRef"],
               request["catalogRevision"],
               request["baseSHA"],
+              freshGenerations=json.loads(Path("fresh-generations.json").read_text()),
           )
           if latest is not None:
               metadata = e2eControl.parseExecutorRunName(latest["display_title"])
-              metadata["baseSHA"] = request["baseSHA"]
+              metadata["baseSHA"] = latest["head_sha"]
               metadata["catalogRevision"] = request["catalogRevision"]
               status = latest.get("status")
               conclusion = latest.get("conclusion")
@@ -293,7 +302,6 @@ jobs:
           fi
           if [ "$action" = dispatch ]; then
             defaultBranch=$(jq -r '.repository.default_branch' "$GITHUB_EVENT_PATH")
-            approvalGeneration=$(jq -r '.approvalGeneration' dispatch-decision.json)
             catalogRevision=$(jq -r '.catalogRevision' dispatch-decision.json)
             requestedGroups=$(jq -c '.requestedGroups' dispatch-decision.json)
             full=$(jq -r '.full' dispatch-decision.json)
@@ -305,6 +313,7 @@ jobs:
                 -f "inputs[prNumber]=$prNumber" \
                 -f "inputs[headSHA]=$headSHA" \
                 -f "inputs[baseSHA]=$baseSHA" \
+                -f "inputs[baseRef]=$baseRef" \
                 -f "inputs[approvalGeneration]=$approvalGeneration" \
                 -f "inputs[catalogRevision]=$catalogRevision" \
                 -f "inputs[requestedGroups]=$requestedGroups" \
@@ -319,10 +328,8 @@ jobs:
             fi
             intentReady=false
             for _ in $(seq 1 24); do
-              gh api --paginate --slurp \
-                "repos/$GITHUB_REPOSITORY/issues/$prNumber/comments?per_page=100" \
-                > reserved-comments.json
-              intentReady=$(python3 - "$approvalGeneration" "$requestedGroups" "$full" "$headSHA" "$baseSHA" "$catalogRevision" <<'PY'
+              python3 hack/e2e_target_history.py comments "$prNumber" --generations-file fresh-generations.json > reserved-comments.json
+              intentReady=$(python3 - "$approvalGeneration" "$requestedGroups" "$full" "$headSHA" "$baseSHA" "$catalogRevision" "$baseRef" <<'PY'
           import json
           import sys
           from pathlib import Path
@@ -348,6 +355,7 @@ jobs:
                       intent["approvalGeneration"] == expectedGeneration
                       and intent["headSHA"] == expectedHeadSHA
                       and intent["baseSHA"] == expectedBaseSHA
+                      and intent["baseRef"] == sys.argv[7]
                       and intent["catalogRevision"] == expectedCatalogRevision
                       and intent["requestedGroups"] == expectedGroups
                       and intent["full"] == expectedFull
@@ -370,9 +378,7 @@ jobs:
           fi
           requestKey=$(jq -r '.requestKey' dispatch-decision.json)
           if [ "$action" = rerun-failed ]; then
-            gh api --paginate --slurp \
-              "repos/$GITHUB_REPOSITORY/issues/$prNumber/comments?per_page=100" \
-              > rerun-comments.json
+            python3 hack/e2e_target_history.py comments "$prNumber" --generations-file fresh-generations.json > rerun-comments.json
             requestKey=$(python3 - <<'PY'
           import json
           from pathlib import Path
@@ -427,10 +433,11 @@ jobs:
               sys.argv[3],
               sys.argv[4],
               sys.argv[5],
+              freshGenerations=json.loads(Path("fresh-generations.json").read_text()),
           )
           if latestRun is not None and latestRun.get("conclusion") == "failure":
               metadata = e2eControl.parseExecutorRunName(latestRun["display_title"])
-              metadata["baseSHA"] = sys.argv[5]
+              metadata["baseSHA"] = latestRun["head_sha"]
               metadata["catalogRevision"] = sys.argv[4]
               if e2eControl.executorRequestKey(metadata) == sys.argv[6]:
                   print(latestRun["id"])
@@ -442,9 +449,7 @@ jobs:
             exit 0
           fi
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$runId" > rerun-state.json
-          gh api --paginate --slurp \
-            "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments?per_page=100" \
-            > pre-marker-comments.json
+          python3 hack/e2e_target_history.py comments "$PR_NUMBER" --generations-file fresh-generations.json > pre-marker-comments.json
           currentAttemptAuthorized=$(python3 - "$HEAD_SHA" "$BASE_SHA" <<'PY'
           import json
           import sys
@@ -466,7 +471,7 @@ jobs:
             exit 0
           fi
           nextAttempt=$(( $(jq -r '.run_attempt' rerun-state.json) + 1 ))
-          python3 - "$runId" "$nextAttempt" "$HEAD_SHA" "$BASE_SHA" <<'PY' > rerun-marker.txt
+          python3 - "$runId" "$nextAttempt" "$HEAD_SHA" "$BASE_SHA" "$BASE_REF" <<'PY' > rerun-marker.txt
           import sys
           import e2e_control as e2eControl
 
@@ -477,10 +482,8 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" -f body="$body"
           markerReady=false
           for _ in $(seq 1 24); do
-            gh api --paginate --slurp \
-              "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments?per_page=100" \
-              > rerun-marker-comments.json
-            markerReady=$(python3 - "$runId" "$nextAttempt" "$HEAD_SHA" "$BASE_SHA" <<'PY'
+            python3 hack/e2e_target_history.py comments "$PR_NUMBER" --generations-file fresh-generations.json > rerun-marker-comments.json
+            markerReady=$(python3 - "$runId" "$nextAttempt" "$HEAD_SHA" "$BASE_SHA" "$BASE_REF" <<'PY'
           import json
           import sys
           from pathlib import Path
@@ -508,9 +511,7 @@ jobs:
               -f body='The pull request changed before the failed-job rerun; no stale rerun was started.'
             exit 0
           fi
-          gh api --paginate --slurp \
-            "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments?per_page=100" \
-            > final-rerun-comments.json
+          python3 hack/e2e_target_history.py comments "$PR_NUMBER" --generations-file fresh-generations.json > final-rerun-comments.json
           currentRequestKey=$(python3 - <<'PY'
           import json
           from pathlib import Path
@@ -556,6 +557,17 @@ jobs:
               -f body='Another rerun consumed the authorized attempt; no additional rerun was started.'
             exit 0
           fi
+          python3 hack/e2e_target_history.py validate "$PR_NUMBER" "$(jq -r '.approvalGeneration' dispatch-decision.json)"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          import e2e_control as control
+
+          run = json.loads(Path("final-rerun-state.json").read_text())
+          generation = control.parseExecutorRunName(run["display_title"])["approvalGeneration"]
+          if generation not in json.loads(Path("fresh-generations.json").read_text()):
+              raise SystemExit("Executor approval predates a target change; authorize again.")
+          PY
           if ! gh api --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$runId/rerun-failed-jobs"; then
             gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
               -f body="The failed-job rerun authorization is durable, but the rerun could not be started; retry \`/retest e2e-failed\`."
@@ -568,6 +580,7 @@ jobs:
     if: >-
       always() &&
       github.event_name == 'workflow_dispatch' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
       github.actor == 'github-actions[bot]'
     permissions:
       contents: write
@@ -588,7 +601,7 @@ jobs:
       - name: Check out the trusted default branch
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          ref: ${{ github.workflow_sha }}
           persist-credentials: false
 
       - name: Build the current cumulative request
@@ -600,16 +613,16 @@ jobs:
         run: |
           set -euo pipefail
           gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" > pull-request.json
-          baseRef=$(python3 hack/e2e_control.py base-ref --pull-request-file pull-request.json)
+          python3 hack/e2e_control.py base-ref --pull-request-file pull-request.json > /dev/null
           if [ "$(jq -r '.state' pull-request.json)" != open ]; then
             echo 'hasApprovals=false' >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          gh api "repos/$GITHUB_REPOSITORY/contents/.github/e2e-selection.json?ref=$baseRef" \
+          baseSHA=$(jq -er '.base.sha' pull-request.json)
+          gh api "repos/$GITHUB_REPOSITORY/contents/.github/e2e-selection.json?ref=$baseSHA" \
             --jq '.content' | base64 --decode > trusted-catalog.json
-          gh api --paginate --slurp \
-            "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments?per_page=100" \
-            > pull-request-comments.json
+          jq -e '.targetBindingVersion == 1' trusted-catalog.json > /dev/null
+          python3 hack/e2e_target_history.py comments "$PR_NUMBER" --generations-file fresh-generations.json > pull-request-comments.json
           python3 - <<'PY'
           import json
           import os
@@ -690,10 +703,11 @@ jobs:
               sys.argv[3],
               sys.argv[5],
               sys.argv[6],
+              freshGenerations=json.loads(Path("fresh-generations.json").read_text()),
           )
           if latestRun is not None:
               metadata = e2eControl.parseExecutorRunName(latestRun["display_title"])
-              metadata["baseSHA"] = sys.argv[6]
+              metadata["baseSHA"] = latestRun["head_sha"]
               metadata["catalogRevision"] = sys.argv[5]
               metadataRequestKey = e2eControl.executorRequestKey(metadata)
               conclusion = latestRun.get("conclusion")
@@ -719,15 +733,19 @@ jobs:
           fi
           externalId="x86-e2e-pr-$PR_NUMBER-$HEAD_SHA"
           expectedMarker="x86-e2e-gate request=$REQUEST_KEY approval=$APPROVAL_GENERATION"
+          expectedMarker+=$'\n'"x86-e2e-target base=$BASE_SHA ref=$BASE_REF"
+          checkApproval() {
+            gh api --paginate --slurp \
+              -H 'Accept: application/vnd.github+json' \
+              "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/check-runs?check_name=x86-e2e%20%2F%20required-gate&filter=all&per_page=100" \
+              | jq -r --arg externalId "$externalId" --arg expectedMarker "$expectedMarker" \
+                '[.[].check_runs[] | select(.app.slug == "github-actions" and .external_id == $externalId)]
+                 | max_by(.id) | .status == "completed" and
+                   .conclusion == "action_required" and .output.text == $expectedMarker'
+          }
           approvalReady=false
           for _ in $(seq 1 24); do
-            ready=$(gh api \
-              -H 'Accept: application/vnd.github+json' \
-              "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/check-runs?check_name=x86-e2e%20%2F%20required-gate&per_page=100" \
-              | jq -r --arg externalId "$externalId" --arg expectedMarker "$expectedMarker" \
-                'any(.check_runs[]; .name == "x86-e2e / required-gate" and
-                  .external_id == $externalId and .status == "completed" and
-                  .conclusion == "action_required" and .output.text == $expectedMarker)')
+            ready=$(checkApproval)
             if [ "$ready" = true ]; then
               approvalReady=true
               break
@@ -747,16 +765,11 @@ jobs:
             echo 'The cumulative request became stale during gate reconciliation.'
             exit 0
           fi
-          ready=$(gh api \
-            -H 'Accept: application/vnd.github+json' \
-            "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/check-runs?check_name=x86-e2e%20%2F%20required-gate&per_page=100" \
-            | jq -r --arg externalId "$externalId" --arg expectedMarker "$expectedMarker" \
-              'any(.check_runs[]; .name == "x86-e2e / required-gate" and
-                .external_id == $externalId and .status == "completed" and
-                .conclusion == "action_required" and .output.text == $expectedMarker)')
+          ready=$(checkApproval)
           if [ "$ready" != true ]; then
             exit 0
           fi
+          python3 hack/e2e_target_history.py validate "$PR_NUMBER" "$APPROVAL_GENERATION"
           executorRef=$(python3 - "$PR_NUMBER" "$APPROVAL_GENERATION" "$DISPATCH_GENERATION" <<'PY'
           import sys
           import e2e_control as e2eControl
@@ -791,6 +804,7 @@ jobs:
             -f "inputs[prNumber]=$PR_NUMBER" \
             -f "inputs[headSHA]=$HEAD_SHA" \
             -f "inputs[baseSHA]=$BASE_SHA" \
+            -f "inputs[baseRef]=$BASE_REF" \
             -f "inputs[approvalGeneration]=$APPROVAL_GENERATION" \
             -f "inputs[dispatchGeneration]=$DISPATCH_GENERATION" \
             -f "inputs[requestedGroups]=$REQUESTED_GROUPS" \
@@ -804,7 +818,7 @@ jobs:
               -f body='The trusted x86 E2E executor could not be started; retry the authorized command.'
             exit 1
           fi
-          expectedTitle="x86-e2e pr=$PR_NUMBER head=$HEAD_SHA approval=$APPROVAL_GENERATION generation=$DISPATCH_GENERATION groups=$REQUESTED_GROUP_NAMES full=$([ "$FULL" = true ] && echo 1 || echo 0)"
+          expectedTitle="x86-e2e pr=$PR_NUMBER head=$HEAD_SHA approval=$APPROVAL_GENERATION generation=$DISPATCH_GENERATION groups=$REQUESTED_GROUP_NAMES full=$([ "$FULL" = true ] && echo 1 || echo 0) ref=$BASE_REF"
           runVisible=false
           for _ in $(seq 1 24); do
             runVisible=$(gh api --paginate --slurp \

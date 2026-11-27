@@ -109,6 +109,7 @@ def decideDispatch(
         "repository": event.get("repository", {}).get("full_name"),
         "prNumber": prNumber,
         "headSHA": headSHA,
+        "baseRef": baseRef,
         "baseSHA": baseSHA,
         "action": command["action"],
         "requestedGroups": command["requestedGroups"],
@@ -136,6 +137,7 @@ def executorRequestKey(request):
     payload = {
         "prNumber": request["prNumber"],
         "headSHA": request["headSHA"],
+        "baseRef": request["baseRef"],
         "baseSHA": request["baseSHA"],
         "action": "dispatch",
         "catalogRevision": request["catalogRevision"],
@@ -157,6 +159,7 @@ def mergeApprovedRequests(decision, priorRequests):
     for request in priorRequests:
         if (
             request.get("headSHA") != decision["headSHA"]
+            or request.get("baseRef") != decision["baseRef"]
             or request.get("baseSHA") != decision["baseSHA"]
             or request.get("catalogRevision") != decision["catalogRevision"]
         ):
@@ -200,6 +203,7 @@ def approvedRequest(pullRequest, catalog, commentPages):
             if (
                 marker is not None
                 and marker["headSHA"] == seed["headSHA"]
+                and marker["baseRef"] == seed["baseRef"]
                 and marker["baseSHA"] == seed["baseSHA"]
                 and marker["catalogRevision"] == seed["catalogRevision"]
             ):
@@ -212,6 +216,7 @@ def approvedRequest(pullRequest, catalog, commentPages):
 def renderRequestMarker(request):
     payload = {
         "headSHA": request["headSHA"],
+        "baseRef": request["baseRef"],
         "baseSHA": request["baseSHA"],
         "approvalGeneration": request["approvalGeneration"],
         "catalogRevision": request["catalogRevision"],
@@ -228,6 +233,7 @@ def renderRequestMarker(request):
 def renderApprovalIntent(request):
     payload = {
         "headSHA": request["headSHA"],
+        "baseRef": request["baseRef"],
         "baseSHA": request["baseSHA"],
         "approvalGeneration": request["approvalGeneration"],
         "catalogRevision": request["catalogRevision"],
@@ -267,6 +273,7 @@ def approvalIntents(pullRequest, catalog, commentPages):
             if (
                 intent is not None
                 and intent["headSHA"] == headSHA
+                and intent["baseRef"] == pullRequest["base"]["ref"]
                 and intent["baseSHA"] == baseSHA
                 and intent["catalogRevision"] == catalogRevision
             ):
@@ -274,12 +281,13 @@ def approvalIntents(pullRequest, catalog, commentPages):
     return intents
 
 
-def renderRerunMarker(runId, runAttempt, headSHA, baseSHA):
+def renderRerunMarker(runId, runAttempt, headSHA, baseSHA, baseRef):
     payload = {
         "runId": int(runId),
         "runAttempt": int(runAttempt),
         "headSHA": headSHA,
         "baseSHA": baseSHA,
+        "baseRef": baseRef,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return f"<!-- x86-e2e-rerun {encoded} -->"
@@ -290,6 +298,8 @@ def parseRerunMarker(body):
     if not match:
         return None
     marker = json.loads(match.group(1))
+    if not supportedBaseRef(marker.get("baseRef")):
+        raise ValueError("invalid rerun marker base ref")
     if not isinstance(marker.get("runId"), int) or marker["runId"] <= 0:
         raise ValueError("invalid rerun marker run identifier")
     if not isinstance(marker.get("runAttempt"), int) or marker["runAttempt"] <= 1:
@@ -301,12 +311,13 @@ def parseRerunMarker(body):
     return marker
 
 
-def hasAuthorizedRerun(commentPages, runId, runAttempt, headSHA, baseSHA):
+def hasAuthorizedRerun(commentPages, runId, runAttempt, headSHA, baseSHA, baseRef):
     expected = {
         "runId": int(runId),
         "runAttempt": int(runAttempt),
         "headSHA": headSHA,
         "baseSHA": baseSHA,
+        "baseRef": baseRef,
     }
     for page in commentPages:
         for comment in page:
@@ -323,6 +334,12 @@ def hasAuthorizedRerun(commentPages, runId, runAttempt, headSHA, baseSHA):
 
 
 def isAuthorizedRunAttempt(run, commentPages, headSHA, baseSHA):
+    try:
+        metadata = parseExecutorRunName(run.get("display_title"))
+    except ValueError:
+        return False
+    if metadata["headSHA"] != headSHA:
+        return False
     runAttempt = run.get("run_attempt")
     if not isinstance(runAttempt, int) or runAttempt <= 0:
         return False
@@ -336,6 +353,7 @@ def isAuthorizedRunAttempt(run, commentPages, headSHA, baseSHA):
         runAttempt,
         headSHA,
         baseSHA,
+        metadata["baseRef"],
     )
 
 
@@ -346,6 +364,8 @@ def validateRequestMarker(request):
     catalogRevision = request.get("catalogRevision")
     groups = request.get("requestedGroups")
     full = request.get("full")
+    if not supportedBaseRef(request.get("baseRef")):
+        raise ValueError("invalid request marker base ref")
     if not re.fullmatch(r"[0-9a-f]{40}", headSHA or ""):
         raise ValueError("invalid request marker HEAD")
     if not re.fullmatch(r"[0-9a-f]{40}", baseSHA or ""):
@@ -363,6 +383,7 @@ def validateRequestMarker(request):
         raise ValueError("invalid request marker full value")
     return {
         "headSHA": headSHA,
+        "baseRef": request["baseRef"],
         "baseSHA": baseSHA,
         "approvalGeneration": approvalGeneration,
         "catalogRevision": catalogRevision,
@@ -428,6 +449,18 @@ def evaluateGate(
             "summary": "The successful x86 E2E workflow did not publish its SelectionPlan.",
             "reason": "",
         }
+    baseSHA = plan.get("baseSHA")
+    if (
+        not supportedBaseRef(plan.get("baseRef"))
+        or not isinstance(baseSHA, str)
+        or not re.fullmatch(r"[0-9a-f]{40}", baseSHA)
+    ):
+        return {
+            "update": True,
+            "conclusion": "failure",
+            "summary": "The x86 E2E selection plan lacks a valid base ref or revision.",
+            "reason": "",
+        }
     if executedPlan != plan:
         return {
             "update": True,
@@ -454,10 +487,10 @@ def parseExecutorRunName(name):
     match = re.fullmatch(
         rf"x86-e2e pr=([1-9][0-9]*) head=([0-9a-f]{{40}}) "
         rf"approval=([1-9][0-9]*) generation=([1-9][0-9]*) "
-        rf"groups=({groupPattern}(?:,{groupPattern})*|-) full=([01])",
-        name,
+        rf"groups=({groupPattern}(?:,{groupPattern})*|-) full=([01]) ref=(\S+)",
+        name if isinstance(name, str) else "",
     )
-    if not match:
+    if not match or not supportedBaseRef(match.group(7)):
         raise ValueError("invalid x86 E2E executor run name")
     groups = [] if match.group(5) == "-" else sorted(set(match.group(5).split(",")))
     return {
@@ -467,6 +500,7 @@ def parseExecutorRunName(name):
         "dispatchGeneration": int(match.group(4)),
         "requestedGroups": groups,
         "full": match.group(6) == "1",
+        "baseRef": match.group(7),
     }
 
 
@@ -484,6 +518,8 @@ def latestExecutorRun(
     baseRef,
     catalogRevision=None,
     workflowSHA=None,
+    *,
+    freshGenerations,
 ):
     if not supportedBaseRef(baseRef):
         return None
@@ -502,6 +538,8 @@ def latestExecutorRun(
             run.get("head_branch") == executorHeadBranch(metadata)
             and metadata["prNumber"] == prNumber
             and metadata["headSHA"] == headSHA
+            and metadata["baseRef"] == baseRef
+            and metadata["approvalGeneration"] in freshGenerations
         ):
             return run
     return None
