@@ -795,7 +795,7 @@ class E2EControlTest(unittest.TestCase):
         self.assertIn("-u LD_PRELOAD", workflow)
         self.assertIn("realEnv=os.environ['GITHUB_ENV']", workflow)
         self.assertIn("os.environ['GITHUB_ENV']=shadowDir+'/env'", workflow)
-        self.assertIn("allowed=('TAG','GO_VERSION','E2E_DIR','VERSION','DEBUG_WRAPPER')", workflow)
+        self.assertIn("allowed=('TAG','GO_VERSION','VERSION','DEBUG_WRAPPER')", workflow)
         self.assertNotIn("actions: write", workflow)
         self.assertNotIn("checks: write", workflow)
         self.assertNotIn("GHCR_TOKEN", workflow)

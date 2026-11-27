@@ -94,10 +94,80 @@ class FastPathTest(unittest.TestCase):
         self.assertIn('go test -c -ldflags "-w -s"', producer)
         self.assertIn("path: ${{ runner.temp }}/hosted-binaries/binaries.tar", producer)
         self.assertIn("ref: ${{ inputs.headSHA || github.sha }}", hosted)
+        self.assertIn("- *checkout-producer-source\n      - uses: ./test/e2e/source/.github/actions/e2e-binaries", hosted)
         self.assertIn("source-sha: ${{ needs.build-e2e-binaries.outputs.hostedSourceSHA }}", hosted)
         self.assertIn("artifact-name: ${{ needs.build-e2e-binaries.outputs.hostedArtifactName }}", hosted)
         self.assertNotIn("*restore-e2e-binaries", hosted)
         self.assertIn('directory: "."', hosted)
+
+    def test_all_base_suites_check_out_the_producer_revision(self):
+        from hack.e2e_selector import workflowJobBlocks
+        workflow = (ROOT / ".github/workflows/build-x86-image.yaml").read_text()
+        jobs = workflowJobBlocks(workflow)
+        self.assertNotIn("ref: ${{ github.event.repository.default_branch }}", workflow)
+        self.assertIn("  E2E_DIR: test/e2e/source\n", workflow)
+        producer = jobs["build-e2e-binaries"]
+        self.assertIn("needs: e2e-selection", producer)
+        self.assertIn("ref: ${{ github.sha }}\n          persist-credentials: false\n"
+                      "          path: test/e2e/source", producer)
+        self.assertIn("github.event_name == 'schedule' && '.' || 'test/e2e/source'", producer)
+        checkout = jobs["k8s-conformance-e2e"].split("&checkout-producer-source\n")[1].split("\n\n")[0]
+        self.assertIn("ref: ${{ needs.build-e2e-binaries.outputs.sourceSHA }}", checkout)
+        self.assertIn("path: test/e2e/source", checkout)
+        base_suites = {name: job for name, job in jobs.items()
+                       if name != "build-e2e-binaries" and "working-directory: ${{ env.E2E_DIR }}" in job}
+        self.assertEqual(len(base_suites), 21)
+        source_only = set()
+        for name, job in base_suites.items():
+            with self.subTest(name=name):
+                self.assertIn("      - build-e2e-binaries\n", job.split("runs-on:")[0])
+                self.assertRegex(job, r"      - [*&]checkout-producer-source\n")
+                if "restore-e2e-binaries" not in job:
+                    source_only.add(name)
+        self.assertEqual(source_only, {"cyclonus-netpol-e2e", "fabric-submariner-conformance-e2e"})
+        self.assertNotIn("uses: ./.github/actions/e2e-binaries", workflow)
+        self.assertEqual(workflow.count("uses: ./test/e2e/source/.github/actions/e2e-binaries"), 2)
+
+    def test_base_advance_preserves_source_and_rejects_wrong_build_or_restore(self):
+        import os
+        import shutil
+        import textwrap
+        if shutil.which("sha256sum") is None:
+            self.skipTest("GNU sha256sum required")
+        workflow = (ROOT / ".github/workflows/build-x86-image.yaml").read_text()
+        step = workflow.split("      - name: Build and package source-bound binaries\n")[1].split("\n\n")[0]
+        self.assertIn("working-directory: ${{ env.E2E_DIR }}", step)
+        build = textwrap.dedent(step.split("        run: |\n")[1])
+        action = (ROOT / ".github/actions/e2e-binaries/action.yml").read_text()
+        verify = textwrap.dedent(action.split("      run: |\n")[1])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-qb", "main"], cwd=root, check=True)
+            (root / "Makefile").write_text("e2e-build:\n\tmkdir -p test/e2e\n\tprintf fixture > test/e2e/base.test\n")
+            subprocess.run(["git", "add", "Makefile"], cwd=root, check=True)
+            commit = ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit"]
+            subprocess.run(commit + ["-qm", "approved"], cwd=root, check=True)
+            approved = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+            subprocess.run(commit + ["--allow-empty", "-qm", "base advanced"], cwd=root, check=True)
+            env = dict(os.environ, GITHUB_SHA=approved, RUNNER_TEMP=tmp, GITHUB_OUTPUT=str(root / "outputs"))
+            self.assertNotEqual(subprocess.run(["bash", "-ec", build], cwd=root, env=env).returncode, 0)
+            self.assertFalse((root / "outputs").exists())
+            self.assertFalse((root / "test/e2e/base.test").exists())
+            subprocess.run(["git", "checkout", "-q", "--detach", approved], cwd=root, check=True)
+            result = subprocess.run(["bash", "-ec", build], cwd=root, env=env, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual((root / "outputs").read_text(), f"sha={approved}\n")
+            env.update(SOURCE_DIR=tmp, SOURCE_SHA=approved, ARCHIVE=str(root / "binaries.tar"))
+            subprocess.run(["git", "checkout", "-q", "main"], cwd=root, check=True)
+            self.assertNotEqual(subprocess.run(["bash", "-ec", verify], env=env).returncode, 0)
+            subprocess.run(["git", "checkout", "-q", "--detach", approved], cwd=root, check=True)
+            subprocess.run(["bash", "-ec", verify], env=env, check=True, capture_output=True)
+            (root / "test/e2e/base.test").write_text("modified")
+            subprocess.run(["tar", "-cf", env["ARCHIVE"], ".e2e-prebuilt", ".e2e-binaries.sha256",
+                            "test/e2e/base.test"], cwd=root, check=True)
+            result = subprocess.run(["bash", "-ec", verify], env=env, capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(b"FAILED", result.stdout)
 
     def test_hosted_packager_round_trips_through_actual_verifier(self):
         import os
@@ -137,12 +207,15 @@ target.chmod(0o755)
             archive = runner / "hosted-binaries/binaries.tar"
             self.assertTrue(archive.is_file(), "artifact must retain the verifier's binaries.tar basename")
             # download-artifact restores the producer's basename, not its parent.
-            download = runner / "e2e-binaries"
+            download_input = re.search(r"^        path: \$\{\{ runner.temp \}\}/(.+)$", action, re.M).group(1)
+            archive_input = re.search(r"^        ARCHIVE: \$\{\{ runner.temp \}\}/(.+)$", action, re.M).group(1)
+            download = runner / download_input
             download.mkdir()
             shutil.copy(archive, download / archive.name)
+            self.assertEqual(download / archive.name, runner / archive_input)
             (source / "test/e2e/kamaji/kamaji.test").unlink()
             env.update(SOURCE_DIR=str(source), SOURCE_SHA=sha,
-                       ARCHIVE=str(download / "binaries.tar"))
+                       ARCHIVE=str(runner / archive_input))
             subprocess.run(["bash", "-c", verifier], env=env, check=True, capture_output=True)
             self.assertTrue(os.access(source / "test/e2e/kamaji/kamaji.test", os.X_OK))
 

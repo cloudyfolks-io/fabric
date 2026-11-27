@@ -18,7 +18,7 @@ defaults:
       os.environ['GITHUB_ENV']=shadowDir+'/env'; os.environ['GITHUB_PATH']=shadowDir+'/path';
       pathlib.Path(os.environ['GITHUB_ENV']).touch(); pathlib.Path(os.environ['GITHUB_PATH']).touch();
       result=subprocess.run(['bash','--noprofile','--norc','-e','-o','pipefail',sys.argv[1]],env=os.environ);
-      allowed=('TAG','GO_VERSION','E2E_DIR','VERSION','DEBUG_WRAPPER');
+      allowed=('TAG','GO_VERSION','VERSION','DEBUG_WRAPPER');
       lines=[line for line in pathlib.Path(os.environ['GITHUB_ENV']).read_text().splitlines() if line.partition('=')[0] in allowed];
       open(realEnv,'a').write(('\n'.join(lines)+'\n') if lines else '');
       shutil.rmtree(shadowDir); sys.exit(result.returncode)" {0}
@@ -93,6 +93,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  E2E_DIR: test/e2e/source
   CI_MEMORY_CHECK: ${{ github.event_name == 'schedule' }}
   # renovate: datasource=github-releases depName=kind packageName=kubernetes-sigs/kind
   KIND_VERSION: v0.32.0
@@ -747,6 +748,9 @@ jobs:
     if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.actor == 'github-actions[bot]')
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    env:
+      # Scheduled builds already have the immutable workflow revision at the root.
+      E2E_DIR: ${{ github.event_name == 'schedule' && '.' || 'test/e2e/source' }}
     outputs:
       sourceSHA: ${{ steps.source.outputs.sha }}
       hostedSourceSHA: ${{ steps.hosted-source.outputs.sha }}
@@ -765,26 +769,14 @@ jobs:
           ref: ${{ inputs.headSHA || github.sha }}
           persist-credentials: false
 
-      - name: Create the default branch directory
-        if: (github.base_ref || github.ref_name) != github.event.repository.default_branch
-        run: mkdir -p test/e2e/source
-
-      - name: Check out the default branch
-        if: (github.base_ref || github.ref_name) != github.event.repository.default_branch
+      - name: Check out the approved E2E source
+        # The selector verifies that a dispatched workflow SHA equals the approved base.
+        if: github.event_name == 'workflow_dispatch'
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          ref: ${{ github.sha }}
           persist-credentials: false
-          fetch-depth: 1
           path: test/e2e/source
-
-      - name: Export E2E directory
-        run: |
-          if [ '${{ github.base_ref || github.ref_name }}' = '${{ github.event.repository.default_branch }}' ]; then
-            echo "E2E_DIR=." >> "$GITHUB_ENV"
-          else
-            echo "E2E_DIR=test/e2e/source" >> "$GITHUB_ENV"
-          fi
 
       - uses: actions/setup-go@v7
         id: setup-go
@@ -824,19 +816,19 @@ jobs:
             ${{ runner.os }}-e2e-go-${{ env.GO_VERSION }}-x86-${{ github.ref_name }}-
             ${{ runner.os }}-e2e-go-${{ env.GO_VERSION }}-x86-${{ github.base_ref }}-
 
-      - run: make e2e-build
-        working-directory: ${{ env.E2E_DIR }}
-
-      - name: Package source-bound binaries
+      - name: Build and package source-bound binaries
         id: source
         working-directory: ${{ env.E2E_DIR }}
         run: |
-          git rev-parse HEAD > .e2e-prebuilt
-          echo "sha=$(cat .e2e-prebuilt)" >> "$GITHUB_OUTPUT"
+          sha=$(git rev-parse HEAD)
+          test "$sha" = "$GITHUB_SHA"
+          make e2e-build
+          echo "$sha" > .e2e-prebuilt
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
           find test/e2e -name '*.test' -type f -print | sort > binary-paths
           test -s binary-paths
           xargs sha256sum < binary-paths > .e2e-binaries.sha256
-          tar -cf "$RUNNER_TEMP/binaries.tar" .e2e-prebuilt .e2e-binaries.sha256 -T binary-paths
+          tar -cf "$RUNNER_TEMP/binaries.tar" -T binary-paths .e2e-prebuilt .e2e-binaries.sha256
 
       - uses: actions/upload-artifact@v7
         with:
@@ -936,26 +928,13 @@ jobs:
           ref: ${{ inputs.headSHA || github.sha }}
           persist-credentials: false
 
-      - name: Create the default branch directory
-        if: (github.base_ref || github.ref_name) != github.event.repository.default_branch
-        run: mkdir -p test/e2e/source
-
-      - name: Check out the default branch
-        if: (github.base_ref || github.ref_name) != github.event.repository.default_branch
+      - &checkout-producer-source
+        name: Check out the binary producer source
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          ref: ${{ needs.build-e2e-binaries.outputs.sourceSHA }}
           persist-credentials: false
-          fetch-depth: 1
           path: test/e2e/source
-
-      - name: Export E2E directory
-        run: |
-          if [ '${{ github.base_ref || github.ref_name }}' = '${{ github.event.repository.default_branch }}' ]; then
-            echo "E2E_DIR=." >> "$GITHUB_ENV"
-          else
-            echo "E2E_DIR=test/e2e/source" >> "$GITHUB_ENV"
-          fi
 
       - name: Remove DNS search domain
         run: |
@@ -973,11 +952,11 @@ jobs:
         run: echo "GO_VERSION=${{ steps.setup-go.outputs.go-version }}" >> "$GITHUB_ENV"
 
       - &restore-e2e-binaries
-        uses: ./.github/actions/e2e-binaries
+        uses: ./test/e2e/source/.github/actions/e2e-binaries
         with:
           source-sha: ${{ needs.build-e2e-binaries.outputs.sourceSHA }}
           artifact-name: ${{ needs.build-e2e-binaries.outputs.artifactName }}
-          directory: ${{ env.E2E_DIR || '.' }}
+          directory: ${{ env.E2E_DIR }}
 
       - name: Go cache
         uses: actions/cache/restore@v6
@@ -1140,26 +1119,7 @@ jobs:
           ref: ${{ inputs.headSHA || github.sha }}
           persist-credentials: false
 
-      - name: Create the default branch directory
-        if: (github.base_ref || github.ref_name) != github.event.repository.default_branch
-        run: mkdir -p test/e2e/source
-
-      - name: Check out the default branch
-        if: (github.base_ref || github.ref_name) != github.event.repository.default_branch
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-          persist-credentials: false
-          fetch-depth: 1
-          path: test/e2e/source
-
-      - name: Export E2E directory
-        run: |
-          if [ '${{ github.base_ref || github.ref_name }}' = '${{ github.event.repository.default_branch }}' ]; then
-            echo "E2E_DIR=." >> "$GITHUB_ENV"
-          else
-            echo "E2E_DIR=test/e2e/source" >> "$GITHUB_ENV"
-          fi
+      - *checkout-producer-source
 
       - name: Remove DNS search domain
         run: |
@@ -1313,6 +1273,7 @@ jobs:
     needs:
       - e2e-selection
       - build-fabric
+      - build-e2e-binaries
       - netpol-path-filter
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -1335,26 +1296,7 @@ jobs:
           ref: ${{ inputs.headSHA || github.sha }}
           persist-credentials: false
 
-      - name: Create the default branch directory
-        if: (github.base_ref || github.ref_name) != github.event.repository.default_branch
-        run: mkdir -p test/e2e/source
-
-      - name: Check out the default branch
-        if: (github.base_ref || github.ref_name) != github.event.repository.default_branch
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-          persist-credentials: false
-          fetch-depth: 1
-          path: test/e2e/source
-
-      - name: Export E2E directory
-        run: |
-          if [ '${{ github.base_ref || github.ref_name }}' = '${{ github.event.repository.default_branch }}' ]; then
-            echo "E2E_DIR=." >> "$GITHUB_ENV"
-          else
-            echo "E2E_DIR=test/e2e/source" >> "$GITHUB_ENV"
-          fi
+      - *checkout-producer-source
 
       - name: Install kind
         uses: helm/kind-action@v1.14.0
@@ -1494,26 +1436,7 @@ jobs:
           ref: ${{ inputs.headSHA || github.sha }}
           persist-credentials: false
 
-      - name: Create the default branch directory
-        if: (github.base_ref || github.ref_name) != github.event.repository.default_branch
-        run: mkdir -p test/e2e/source
-
-      - name: Check out the default branch
-        if: (github.base_ref || github.ref_name) != github.event.repository.default_branch
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-          persist-credentials: false
-          fetch-depth: 1
-          path: test/e2e/source
-
-      - name: Export E2E directory
-        run: |
-          if [ '${{ github.base_ref || github.ref_name }}' = '${{ github.event.repository.default_branch }}' ]; then
-            echo "E2E_DIR=." >> "$GITHUB_ENV"
-          else
-            echo "E2E_DIR=test/e2e/source" >> "$GITHUB_ENV"
-          fi
+      - *checkout-producer-source
 
       - uses: actions/setup-go@v7
         id: setup-go
@@ -1688,26 +1611,7 @@ jobs:
           ref: ${{ inputs.headSHA || github.sha }}
           persist-credentials: false
 
-      - name: Create the default branch directory
-        if: (github.base_ref || github.ref_name) != github.event.repository.default_branch
-        run: mkdir -p test/e2e/source
-
-      - name: Check out the default branch
-        if: (github.base_ref || github.ref_name) != github.event.repository.default_branch
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-          persist-credentials: false
-          fetch-depth: 1
-          path: test/e2e/source
-
-      - name: Export E2E directory
-        run: |
-          if [ '${{ github.base_ref || github.ref_name }}' = '${{ github.event.repository.default_branch }}' ]; then
-            echo "E2E_DIR=." >> "$GITHUB_ENV"
-          else
-            echo "E2E_DIR=test/e2e/source" >> "$GITHUB_ENV"
-          fi
+      - *checkout-producer-source
 
       - uses: actions/setup-go@v7
         id: setup-go
@@ -1845,26 +1749,7 @@ jobs:
           ref: ${{ inputs.headSHA || github.sha }}
           persist-credentials: false
 
-      - name: Create the default branch directory
-        if: (github.base_ref || github.ref_name) != github.event.repository.default_branch
-        run: mkdir -p test/e2e/source
-
-      - name: Check out the default branch
-        if: (github.base_ref || github.ref_name) != github.event.repository.default_branch
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-          persist-credentials: false
-          fetch-depth: 1
-          path: test/e2e/source
-
-      - name: Export E2E directory
-        run: |
-          if [ '${{ github.base_ref || github.ref_name }}' = '${{ github.event.repository.default_branch }}' ]; then
-            echo "E2E_DIR=." >> "$GITHUB_ENV"
-          else
-            echo "E2E_DIR=test/e2e/source" >> "$GITHUB_ENV"
-          fi
+      - *checkout-producer-source
 
       - uses: actions/setup-go@v7
         id: setup-go
@@ -1990,26 +1875,7 @@ jobs:
           ref: ${{ inputs.headSHA || github.sha }}
           persist-credentials: false
 
-      - name: Create the default branch directory
-        if: (github.base_ref || github.ref_name) != github.event.repository.default_branch
-        run: mkdir -p test/e2e/source
-
-      - name: Check out the default branch
-        if: (github.base_ref || github.ref_name) != github.event.repository.default_branch
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-          persist-credentials: false
-          fetch-depth: 1
-          path: test/e2e/source
-
-      - name: Export E2E directory
-        run: |
-          if [ '${{ github.base_ref || github.ref_name }}' = '${{ github.event.repository.default_branch }}' ]; then
-            echo "E2E_DIR=." >> "$GITHUB_ENV"
-          else
-            echo "E2E_DIR=test/e2e/source" >> "$GITHUB_ENV"
-          fi
+      - *checkout-producer-source
 
       - name: Remove DNS search domain
         run: |
@@ -2170,7 +2036,8 @@ jobs:
       - name: Export Go full version
         run: echo "GO_VERSION=${{ steps.setup-go.outputs.go-version }}" >> "$GITHUB_ENV"
 
-      - uses: ./.github/actions/e2e-binaries
+      - *checkout-producer-source
+      - uses: ./test/e2e/source/.github/actions/e2e-binaries
         with:
           source-sha: ${{ needs.build-e2e-binaries.outputs.hostedSourceSHA }}
           artifact-name: ${{ needs.build-e2e-binaries.outputs.hostedArtifactName }}
@@ -2549,26 +2416,7 @@ jobs:
           ref: ${{ inputs.headSHA || github.sha }}
           persist-credentials: false
 
-      - name: Create the default branch directory
-        if: (github.base_ref || github.ref_name) != github.event.repository.default_branch
-        run: mkdir -p test/e2e/source
-
-      - name: Check out the default branch
-        if: (github.base_ref || github.ref_name) != github.event.repository.default_branch
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-          persist-credentials: false
-          fetch-depth: 1
-          path: test/e2e/source
-
-      - name: Export E2E directory
-        run: |
-          if [ '${{ github.base_ref || github.ref_name }}' = '${{ github.event.repository.default_branch }}' ]; then
-            echo "E2E_DIR=." >> "$GITHUB_ENV"
-          else
-            echo "E2E_DIR=test/e2e/source" >> "$GITHUB_ENV"
-          fi
+      - *checkout-producer-source
 
       - uses: actions/setup-go@v7
         id: setup-go
@@ -2735,26 +2583,7 @@ jobs:
           ref: ${{ inputs.headSHA || github.sha }}
           persist-credentials: false
 
-      - name: Create the default branch directory
-        if: (github.base_ref || github.ref_name) != github.event.repository.default_branch
-        run: mkdir -p test/e2e/source
-
-      - name: Check out the default branch
-        if: (github.base_ref || github.ref_name) != github.event.repository.default_branch
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-          persist-credentials: false
-          fetch-depth: 1
-          path: test/e2e/source
-
-      - name: Export E2E directory
-        run: |
-          if [ '${{ github.base_ref || github.ref_name }}' = '${{ github.event.repository.default_branch }}' ]; then
-            echo "E2E_DIR=." >> "$GITHUB_ENV"
-          else
-            echo "E2E_DIR=test/e2e/source" >> "$GITHUB_ENV"
-          fi
+      - *checkout-producer-source
 
       - uses: actions/setup-go@v7
         id: setup-go
@@ -2872,26 +2701,7 @@ jobs:
           ref: ${{ inputs.headSHA || github.sha }}
           persist-credentials: false
 
-      - name: Create the default branch directory
-        if: (github.base_ref || github.ref_name) != github.event.repository.default_branch
-        run: mkdir -p test/e2e/source
-
-      - name: Check out the default branch
-        if: (github.base_ref || github.ref_name) != github.event.repository.default_branch
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-          persist-credentials: false
-          fetch-depth: 1
-          path: test/e2e/source
-
-      - name: Export E2E directory
-        run: |
-          if [ '${{ github.base_ref || github.ref_name }}' = '${{ github.event.repository.default_branch }}' ]; then
-            echo "E2E_DIR=." >> "$GITHUB_ENV"
-          else
-            echo "E2E_DIR=test/e2e/source" >> "$GITHUB_ENV"
-          fi
+      - *checkout-producer-source
 
       - uses: actions/setup-go@v7
         id: setup-go
@@ -3015,26 +2825,7 @@ jobs:
         with:
           version: '${{ env.HELM_VERSION }}'
 
-      - name: Create the default branch directory
-        if: (github.base_ref || github.ref_name) != github.event.repository.default_branch
-        run: mkdir -p test/e2e/source
-
-      - name: Check out the default branch
-        if: (github.base_ref || github.ref_name) != github.event.repository.default_branch
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-          persist-credentials: false
-          fetch-depth: 1
-          path: test/e2e/source
-
-      - name: Export E2E directory
-        run: |
-          if [ '${{ github.base_ref || github.ref_name }}' = '${{ github.event.repository.default_branch }}' ]; then
-            echo "E2E_DIR=." >> "$GITHUB_ENV"
-          else
-            echo "E2E_DIR=test/e2e/source" >> "$GITHUB_ENV"
-          fi
+      - *checkout-producer-source
 
       - name: Configure docker
         run: |
@@ -3179,26 +2970,7 @@ jobs:
           ref: ${{ inputs.headSHA || github.sha }}
           persist-credentials: false
 
-      - name: Create the default branch directory
-        if: (github.base_ref || github.ref_name) != github.event.repository.default_branch
-        run: mkdir -p test/e2e/source
-
-      - name: Check out the default branch
-        if: (github.base_ref || github.ref_name) != github.event.repository.default_branch
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-          persist-credentials: false
-          fetch-depth: 1
-          path: test/e2e/source
-
-      - name: Export E2E directory
-        run: |
-          if [ '${{ github.base_ref || github.ref_name }}' = '${{ github.event.repository.default_branch }}' ]; then
-            echo "E2E_DIR=." >> "$GITHUB_ENV"
-          else
-            echo "E2E_DIR=test/e2e/source" >> "$GITHUB_ENV"
-          fi
+      - *checkout-producer-source
 
       - uses: actions/setup-go@v7
         id: setup-go
@@ -3290,6 +3062,7 @@ jobs:
     needs:
       - e2e-selection
       - build-fabric
+      - build-e2e-binaries
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -3301,26 +3074,7 @@ jobs:
           ref: ${{ inputs.headSHA || github.sha }}
           persist-credentials: false
 
-      - name: Create the default branch directory
-        if: (github.base_ref || github.ref_name) != github.event.repository.default_branch
-        run: mkdir -p test/e2e/source
-
-      - name: Check out the default branch
-        if: (github.base_ref || github.ref_name) != github.event.repository.default_branch
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-          persist-credentials: false
-          fetch-depth: 1
-          path: test/e2e/source
-
-      - name: Export E2E directory
-        run: |
-          if [ '${{ github.base_ref || github.ref_name }}' = '${{ github.event.repository.default_branch }}' ]; then
-            echo "E2E_DIR=." >> "$GITHUB_ENV"
-          else
-            echo "E2E_DIR=test/e2e/source" >> "$GITHUB_ENV"
-          fi
+      - *checkout-producer-source
 
       - name: Install kind
         uses: helm/kind-action@v1.14.0
@@ -3396,26 +3150,7 @@ jobs:
           ref: ${{ inputs.headSHA || github.sha }}
           persist-credentials: false
 
-      - name: Create the default branch directory
-        if: (github.base_ref || github.ref_name) != github.event.repository.default_branch
-        run: mkdir -p test/e2e/source
-
-      - name: Check out the default branch
-        if: (github.base_ref || github.ref_name) != github.event.repository.default_branch
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-          fetch-depth: 1
-          path: test/e2e/source
-          persist-credentials: false
-
-      - name: Export E2E directory
-        run: |
-          if [ '${{ github.base_ref || github.ref_name }}' = '${{ github.event.repository.default_branch }}' ]; then
-            echo "E2E_DIR=." >> "$GITHUB_ENV"
-          else
-            echo "E2E_DIR=test/e2e/source" >> "$GITHUB_ENV"
-          fi
+      - *checkout-producer-source
 
       - uses: actions/setup-go@v7
         id: setup-go
@@ -3533,26 +3268,7 @@ jobs:
           ref: ${{ inputs.headSHA || github.sha }}
           persist-credentials: false
 
-      - name: Create the default branch directory
-        if: (github.base_ref || github.ref_name) != github.event.repository.default_branch
-        run: mkdir -p test/e2e/source
-
-      - name: Check out the default branch
-        if: (github.base_ref || github.ref_name) != github.event.repository.default_branch
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-          persist-credentials: false
-          fetch-depth: 1
-          path: test/e2e/source
-
-      - name: Export E2E directory
-        run: |
-          if [ '${{ github.base_ref || github.ref_name }}' = '${{ github.event.repository.default_branch }}' ]; then
-            echo "E2E_DIR=." >> "$GITHUB_ENV"
-          else
-            echo "E2E_DIR=test/e2e/source" >> "$GITHUB_ENV"
-          fi
+      - *checkout-producer-source
 
       - uses: actions/setup-go@v7
         id: setup-go
@@ -3676,26 +3392,7 @@ jobs:
           ref: ${{ inputs.headSHA || github.sha }}
           persist-credentials: false
 
-      - name: Create the default branch directory
-        if: (github.base_ref || github.ref_name) != github.event.repository.default_branch
-        run: mkdir -p test/e2e/source
-
-      - name: Check out the default branch
-        if: (github.base_ref || github.ref_name) != github.event.repository.default_branch
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-          persist-credentials: false
-          fetch-depth: 1
-          path: test/e2e/source
-
-      - name: Export E2E directory
-        run: |
-          if [ '${{ github.base_ref || github.ref_name }}' = '${{ github.event.repository.default_branch }}' ]; then
-            echo "E2E_DIR=." >> "$GITHUB_ENV"
-          else
-            echo "E2E_DIR=test/e2e/source" >> "$GITHUB_ENV"
-          fi
+      - *checkout-producer-source
 
       - uses: actions/setup-go@v7
         id: setup-go
@@ -3814,26 +3511,7 @@ jobs:
           ref: ${{ inputs.headSHA || github.sha }}
           persist-credentials: false
 
-      - name: Create the default branch directory
-        if: (github.base_ref || github.ref_name) != github.event.repository.default_branch
-        run: mkdir -p test/e2e/source
-
-      - name: Check out the default branch
-        if: (github.base_ref || github.ref_name) != github.event.repository.default_branch
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-          persist-credentials: false
-          fetch-depth: 1
-          path: test/e2e/source
-
-      - name: Export E2E directory
-        run: |
-          if [ '${{ github.base_ref || github.ref_name }}' = '${{ github.event.repository.default_branch }}' ]; then
-            echo "E2E_DIR=." >> "$GITHUB_ENV"
-          else
-            echo "E2E_DIR=test/e2e/source" >> "$GITHUB_ENV"
-          fi
+      - *checkout-producer-source
 
       - uses: actions/setup-go@v7
         id: setup-go
@@ -3956,26 +3634,7 @@ jobs:
           ref: ${{ inputs.headSHA || github.sha }}
           persist-credentials: false
 
-      - name: Create the default branch directory
-        if: (github.base_ref || github.ref_name) != github.event.repository.default_branch
-        run: mkdir -p test/e2e/source
-
-      - name: Check out the default branch
-        if: (github.base_ref || github.ref_name) != github.event.repository.default_branch
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-          persist-credentials: false
-          fetch-depth: 1
-          path: test/e2e/source
-
-      - name: Export E2E directory
-        run: |
-          if [ '${{ github.base_ref || github.ref_name }}' = '${{ github.event.repository.default_branch }}' ]; then
-            echo "E2E_DIR=." >> "$GITHUB_ENV"
-          else
-            echo "E2E_DIR=test/e2e/source" >> "$GITHUB_ENV"
-          fi
+      - *checkout-producer-source
 
       - uses: actions/setup-go@v7
         id: setup-go
@@ -4068,26 +3727,7 @@ jobs:
           ref: ${{ inputs.headSHA || github.sha }}
           persist-credentials: false
 
-      - name: Create the default branch directory
-        if: (github.base_ref || github.ref_name) != github.event.repository.default_branch
-        run: mkdir -p test/e2e/source
-
-      - name: Check out the default branch
-        if: (github.base_ref || github.ref_name) != github.event.repository.default_branch
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-          persist-credentials: false
-          fetch-depth: 1
-          path: test/e2e/source
-
-      - name: Export E2E directory
-        run: |
-          if [ '${{ github.base_ref || github.ref_name }}' = '${{ github.event.repository.default_branch }}' ]; then
-            echo "E2E_DIR=." >> "$GITHUB_ENV"
-          else
-            echo "E2E_DIR=test/e2e/source" >> "$GITHUB_ENV"
-          fi
+      - *checkout-producer-source
 
       - uses: actions/setup-go@v7
         id: setup-go
@@ -4205,26 +3845,7 @@ jobs:
           ref: ${{ inputs.headSHA || github.sha }}
           persist-credentials: false
 
-      - name: Create the default branch directory
-        if: (github.base_ref || github.ref_name) != github.event.repository.default_branch
-        run: mkdir -p test/e2e/source
-
-      - name: Check out the default branch
-        if: (github.base_ref || github.ref_name) != github.event.repository.default_branch
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-          persist-credentials: false
-          fetch-depth: 1
-          path: test/e2e/source
-
-      - name: Export E2E directory
-        run: |
-          if [ '${{ github.base_ref || github.ref_name }}' = '${{ github.event.repository.default_branch }}' ]; then
-            echo "E2E_DIR=." >> "$GITHUB_ENV"
-          else
-            echo "E2E_DIR=test/e2e/source" >> "$GITHUB_ENV"
-          fi
+      - *checkout-producer-source
 
       - uses: actions/setup-go@v7
         id: setup-go
@@ -4340,26 +3961,7 @@ jobs:
           ref: ${{ inputs.headSHA || github.sha }}
           persist-credentials: false
 
-      - name: Create the default branch directory
-        if: (github.base_ref || github.ref_name) != github.event.repository.default_branch
-        run: mkdir -p test/e2e/source
-
-      - name: Check out the default branch
-        if: (github.base_ref || github.ref_name) != github.event.repository.default_branch
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-          persist-credentials: false
-          fetch-depth: 1
-          path: test/e2e/source
-
-      - name: Export E2E directory
-        run: |
-          if [ '${{ github.base_ref || github.ref_name }}' = '${{ github.event.repository.default_branch }}' ]; then
-            echo "E2E_DIR=." >> "$GITHUB_ENV"
-          else
-            echo "E2E_DIR=test/e2e/source" >> "$GITHUB_ENV"
-          fi
+      - *checkout-producer-source
 
       - uses: actions/setup-go@v7
         id: setup-go
