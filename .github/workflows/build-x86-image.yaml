@@ -122,6 +122,7 @@ jobs:
       k8sConformanceMatrix: ${{ steps.outputs.outputs.k8sConformanceMatrix || steps.fallbackMatrices.outputs.k8sConformanceMatrix }}
       fabricConformanceMatrix: ${{ steps.outputs.outputs.fabricConformanceMatrix || steps.fallbackMatrices.outputs.fabricConformanceMatrix }}
       headSHA: ${{ steps.context.outputs.headSHA }}
+      baseRef: ${{ steps.context.outputs.baseRef }}
       prNumber: ${{ steps.context.outputs.prNumber }}
     steps:
       - uses: actions/checkout@v7
@@ -160,6 +161,7 @@ jobs:
           forceFullReason=''
           requestedGroups='[]'
           headSHA="$GITHUB_SHA"
+          baseRef="${GITHUB_BASE_REF:-$GITHUB_REF_NAME}"
           prNumber=0
           checkedOutSHA=$(git rev-parse HEAD)
           if [ "$EVENT_NAME" = workflow_dispatch ] && [ "$checkedOutSHA" != "$INPUT_BASE_SHA" ]; then
@@ -196,7 +198,7 @@ jobs:
             prNumber="$PR_NUMBER"
           elif [ "$EVENT_NAME" = workflow_dispatch ]; then
             gh api "repos/$GITHUB_REPOSITORY/pulls/$INPUT_PR_NUMBER" > pull-request.json
-            python3 - "$INPUT_HEAD_SHA" "$INPUT_BASE_SHA" "$GITHUB_REF_NAME" "$GITHUB_SHA" "$INPUT_PR_NUMBER" <<'PY'
+            baseRef=$(python3 - "$INPUT_HEAD_SHA" "$INPUT_BASE_SHA" "$GITHUB_REF_NAME" "$GITHUB_SHA" "$INPUT_PR_NUMBER" <<'PY'
           import json
           import re
           import sys
@@ -211,13 +213,18 @@ jobs:
               raise SystemExit("pull request HEAD changed; dispatch again")
           if pullRequest["base"]["sha"] != sys.argv[2]:
               raise SystemExit("pull request base revision changed; dispatch again")
+          baseRef = pullRequest["base"]["ref"]
+          if not re.fullmatch(r"main|release-[A-Za-z0-9._-]+", baseRef):
+              raise SystemExit("pull request base branch is not supported")
           if not re.fullmatch(rf"x86-e2e/pr-{sys.argv[5]}-a-[0-9]+-d-[0-9]+", sys.argv[3]):
               raise SystemExit("executor must run from its dispatched isolated ref")
           if sys.argv[4] != sys.argv[2]:
               raise SystemExit("executor workflow revision does not match the approved base")
           pullRequest["labels"] = []
           Path("selector-event.json").write_text(json.dumps({"pull_request": pullRequest}))
+          print(baseRef)
           PY
+            )
             gh api --paginate --slurp \
               "repos/$GITHUB_REPOSITORY/pulls/$INPUT_PR_NUMBER/files?per_page=100" > pull-request-files.json
             python3 - <<'PY'
@@ -276,6 +283,7 @@ jobs:
             forceFull=true
           fi
           echo "headSHA=$headSHA" >> "$GITHUB_OUTPUT"
+          echo "baseRef=$baseRef" >> "$GITHUB_OUTPUT"
           echo "prNumber=$prNumber" >> "$GITHUB_OUTPUT"
           echo "forceFull=$forceFull" >> "$GITHUB_OUTPUT"
           echo "forceFullReason=$forceFullReason" >> "$GITHUB_OUTPUT"
@@ -773,13 +781,15 @@ jobs:
         # The selector verifies that a dispatched workflow SHA equals the approved base.
         if: github.event_name == 'workflow_dispatch'
         uses: actions/checkout@v7
-        with:
+        with: &approved-e2e-source
           ref: ${{ github.sha }}
           persist-credentials: false
           path: test/e2e/source
 
       - uses: actions/setup-go@v7
         id: setup-go
+        env: &base-go-environment
+          GOWORK: 'off'
         with:
           go-version-file: ${{ env.E2E_DIR }}/go.mod
           check-latest: true
@@ -819,6 +829,9 @@ jobs:
       - name: Build and package source-bound binaries
         id: source
         working-directory: ${{ env.E2E_DIR }}
+        env:
+          GOWORK: 'off'
+          E2E_BRANCH: ${{ needs.e2e-selection.outputs.baseRef }}
         run: |
           sha=$(git rev-parse HEAD)
           test "$sha" = "$GITHUB_SHA"
@@ -850,7 +863,9 @@ jobs:
         run: |
           set -euo pipefail
           sha=$(git rev-parse HEAD)
-          if [ "$(cat .e2e-prebuilt 2>/dev/null || true)" != "$sha" ] || [ ! -x test/e2e/kamaji/kamaji.test ]; then
+          workspace=$(go env GOWORK)
+          if [[ "$(cat .e2e-prebuilt 2>/dev/null || true)" != "$sha" || ! -x test/e2e/kamaji/kamaji.test ||
+                ( -n "$workspace" && "$workspace" != off ) ]]; then
             go test -c -ldflags "-w -s" -o test/e2e/kamaji/kamaji.test ./test/e2e/kamaji
           fi
           printf '%s\n' "$sha" > .e2e-prebuilt
@@ -943,6 +958,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         id: setup-go
+        env: *base-go-environment
         with:
           go-version-file: ${{ env.E2E_DIR }}/go.mod
           check-latest: true
@@ -1004,7 +1020,8 @@ jobs:
         id: e2e
         working-directory: ${{ env.E2E_DIR }}
         env:
-          E2E_BRANCH: ${{ github.base_ref || github.ref_name }}
+          GOWORK: 'off'
+          E2E_BRANCH: ${{ needs.e2e-selection.outputs.baseRef }}
           E2E_IP_FAMILY: ${{ matrix.ip-family }}
           E2E_NETWORK_MODE: ${{ matrix.mode }}
         run: make k8s-conformance-e2e
@@ -1128,6 +1145,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         id: setup-go
+        env: *base-go-environment
         with:
           go-version-file: ${{ env.E2E_DIR }}/go.mod
           check-latest: true
@@ -1184,6 +1202,9 @@ jobs:
       - name: Run E2E
         id: e2e
         working-directory: ${{ env.E2E_DIR }}
+        env:
+          GOWORK: 'off'
+          E2E_BRANCH: ${{ needs.e2e-selection.outputs.baseRef }}
         run: make k8s-netpol-e2e
 
       - name: Collect k8s events
@@ -1273,7 +1294,6 @@ jobs:
     needs:
       - e2e-selection
       - build-fabric
-      - build-e2e-binaries
       - netpol-path-filter
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -1296,7 +1316,9 @@ jobs:
           ref: ${{ inputs.headSHA || github.sha }}
           persist-credentials: false
 
-      - *checkout-producer-source
+      - name: Check out the approved E2E source
+        uses: actions/checkout@v7
+        with: *approved-e2e-source
 
       - name: Install kind
         uses: helm/kind-action@v1.14.0
@@ -1334,6 +1356,9 @@ jobs:
       - name: Run E2E
         id: e2e
         working-directory: ${{ env.E2E_DIR }}
+        env:
+          GOWORK: 'off'
+          E2E_BRANCH: ${{ needs.e2e-selection.outputs.baseRef }}
         run: make cyclonus-netpol-e2e
 
       - name: Collect k8s events
@@ -1440,6 +1465,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         id: setup-go
+        env: *base-go-environment
         with:
           go-version-file: ${{ env.E2E_DIR }}/go.mod
           check-latest: true
@@ -1495,7 +1521,8 @@ jobs:
         id: e2e
         working-directory: ${{ env.E2E_DIR }}
         env:
-          E2E_BRANCH: ${{ github.base_ref || github.ref_name }}
+          GOWORK: 'off'
+          E2E_BRANCH: ${{ needs.e2e-selection.outputs.baseRef }}
           E2E_IP_FAMILY: ${{ matrix.ip-family }}
           E2E_NETWORK_MODE: ${{ matrix.mode }}
         run: |
@@ -1615,6 +1642,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         id: setup-go
+        env: *base-go-environment
         with:
           go-version-file: ${{ env.E2E_DIR }}/go.mod
           check-latest: true
@@ -1662,7 +1690,8 @@ jobs:
         id: e2e
         working-directory: ${{ env.E2E_DIR }}
         env:
-          E2E_BRANCH: ${{ github.base_ref || github.ref_name }}
+          GOWORK: 'off'
+          E2E_BRANCH: ${{ needs.e2e-selection.outputs.baseRef }}
           E2E_IP_FAMILY: ${{ matrix.ip-family }}
         run: make fabric-ic-conformance-e2e
 
@@ -1753,6 +1782,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         id: setup-go
+        env: *base-go-environment
         with:
           go-version-file: ${{ env.E2E_DIR }}/go.mod
           check-latest: true
@@ -1803,7 +1833,8 @@ jobs:
         id: e2e
         working-directory: ${{ env.E2E_DIR }}
         env:
-          E2E_BRANCH: ${{ github.base_ref || github.ref_name }}
+          GOWORK: 'off'
+          E2E_BRANCH: ${{ needs.e2e-selection.outputs.baseRef }}
           E2E_IP_FAMILY: ${{ matrix.ip-family }}
         run: make fabric-multus-conformance-e2e
 
@@ -1884,6 +1915,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         id: setup-go
+        env: *base-go-environment
         with:
           go-version-file: ${{ env.E2E_DIR }}/go.mod
           check-latest: true
@@ -1930,7 +1962,8 @@ jobs:
         id: e2e
         working-directory: ${{ env.E2E_DIR }}
         env:
-          E2E_BRANCH: ${{ github.base_ref || github.ref_name }}
+          GOWORK: 'off'
+          E2E_BRANCH: ${{ needs.e2e-selection.outputs.baseRef }}
           E2E_IP_FAMILY: ${{ matrix.ip-family }}
           E2E_NETWORK_MODE: overlay
           KUBE_OVN_PRIMARY_CNI: "false"
@@ -2083,7 +2116,7 @@ jobs:
       - name: Run hosted OVN central E2E
         id: e2e
         env:
-          E2E_BRANCH: ${{ github.base_ref || github.ref_name }}
+          E2E_BRANCH: ${{ needs.e2e-selection.outputs.baseRef }}
           E2E_IP_FAMILY: ${{ matrix.ip-family }}
           E2E_NETWORK_MODE: overlay
         run: make fabric-kamaji-e2e
@@ -2420,6 +2453,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         id: setup-go
+        env: *base-go-environment
         with:
           go-version-file: ${{ env.E2E_DIR }}/go.mod
           check-latest: true
@@ -2468,7 +2502,8 @@ jobs:
         id: e2e
         working-directory: ${{ env.E2E_DIR }}
         env:
-          E2E_BRANCH: ${{ github.base_ref || github.ref_name }}
+          GOWORK: 'off'
+          E2E_BRANCH: ${{ needs.e2e-selection.outputs.baseRef }}
         run: make fabric-webhook-e2e
 
 
@@ -2587,6 +2622,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         id: setup-go
+        env: *base-go-environment
         with:
           go-version-file: ${{ env.E2E_DIR }}/go.mod
           check-latest: true
@@ -2640,7 +2676,8 @@ jobs:
         id: e2e
         working-directory: ${{ env.E2E_DIR }}
         env:
-          E2E_BRANCH: ${{ github.base_ref || github.ref_name }}
+          GOWORK: 'off'
+          E2E_BRANCH: ${{ needs.e2e-selection.outputs.baseRef }}
           E2E_IP_FAMILY: ${{ matrix.ip-family }}
           E2E_NETWORK_MODE: ${{ matrix.mode }}
         run: make fabric-cnp-domain-e2e
@@ -2705,6 +2742,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         id: setup-go
+        env: *base-go-environment
         with:
           go-version-file: ${{ env.E2E_DIR }}/go.mod
           check-latest: true
@@ -2758,7 +2796,8 @@ jobs:
         id: e2e
         working-directory: ${{ env.E2E_DIR }}
         env:
-          E2E_BRANCH: ${{ github.base_ref || github.ref_name }}
+          GOWORK: 'off'
+          E2E_BRANCH: ${{ needs.e2e-selection.outputs.baseRef }}
           E2E_IP_FAMILY: ${{ matrix.ip-family }}
           E2E_NETWORK_MODE: ${{ matrix.mode }}
         run: make fabric-anp-domain-e2e
@@ -2838,6 +2877,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         id: setup-go
+        env: *base-go-environment
         with:
           go-version-file: ${{ env.E2E_DIR }}/go.mod
           check-latest: true
@@ -2885,8 +2925,9 @@ jobs:
         id: e2e
         working-directory: ${{ env.E2E_DIR }}
         env:
+          GOWORK: 'off'
           E2E_CILIUM_CHAINING: "true"
-          E2E_BRANCH: ${{ github.base_ref || github.ref_name }}
+          E2E_BRANCH: ${{ needs.e2e-selection.outputs.baseRef }}
           E2E_IP_FAMILY: ${{ matrix.ip-family }}
           E2E_NETWORK_MODE: ${{ matrix.mode }}
         run: make k8s-conformance-e2e
@@ -2974,6 +3015,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         id: setup-go
+        env: *base-go-environment
         with:
           go-version-file: ${{ env.E2E_DIR }}/go.mod
           check-latest: true
@@ -3028,7 +3070,8 @@ jobs:
         id: e2e
         working-directory: ${{ env.E2E_DIR }}
         env:
-          E2E_BRANCH: ${{ github.base_ref || github.ref_name }}
+          GOWORK: 'off'
+          E2E_BRANCH: ${{ needs.e2e-selection.outputs.baseRef }}
           E2E_IP_FAMILY: ${{ matrix.ip-family }}
         run: |
           make fabric-security-e2e
@@ -3062,7 +3105,6 @@ jobs:
     needs:
       - e2e-selection
       - build-fabric
-      - build-e2e-binaries
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -3074,7 +3116,9 @@ jobs:
           ref: ${{ inputs.headSHA || github.sha }}
           persist-credentials: false
 
-      - *checkout-producer-source
+      - name: Check out the approved E2E source
+        uses: actions/checkout@v7
+        with: *approved-e2e-source
 
       - name: Install kind
         uses: helm/kind-action@v1.14.0
@@ -3108,6 +3152,9 @@ jobs:
       - name: Run E2E
         id: e2e
         working-directory: ${{ env.E2E_DIR }}
+        env:
+          GOWORK: 'off'
+          E2E_BRANCH: ${{ needs.e2e-selection.outputs.baseRef }}
         run: make fabric-submariner-conformance-e2e
 
 
@@ -3154,6 +3201,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         id: setup-go
+        env: *base-go-environment
         with:
           go-version-file: ${{ env.E2E_DIR }}/go.mod
           check-latest: true
@@ -3212,7 +3260,8 @@ jobs:
         id: e2e
         working-directory: ${{ env.E2E_DIR }}
         env:
-          E2E_BRANCH: ${{ github.base_ref || github.ref_name }}
+          GOWORK: 'off'
+          E2E_BRANCH: ${{ needs.e2e-selection.outputs.baseRef }}
           E2E_IP_FAMILY: ipv4
         run: make vpc-dynamic-routing-e2e
 
@@ -3272,6 +3321,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         id: setup-go
+        env: *base-go-environment
         with:
           go-version-file: ${{ env.E2E_DIR }}/go.mod
           check-latest: true
@@ -3319,14 +3369,16 @@ jobs:
         id: vip-e2e
         working-directory: ${{ env.E2E_DIR }}
         env:
-          E2E_BRANCH: ${{ github.base_ref || github.ref_name }}
+          GOWORK: 'off'
+          E2E_BRANCH: ${{ needs.e2e-selection.outputs.baseRef }}
         run: make vip-conformance-e2e
 
       - name: Run Ovn VPC NAT GW E2E
         id: vpc-e2e
         working-directory: ${{ env.E2E_DIR }}
         env:
-          E2E_BRANCH: ${{ github.base_ref || github.ref_name }}
+          GOWORK: 'off'
+          E2E_BRANCH: ${{ needs.e2e-selection.outputs.baseRef }}
         run: make ovn-vpc-nat-gw-conformance-e2e
 
       - name: Collect k8s events
@@ -3396,6 +3448,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         id: setup-go
+        env: *base-go-environment
         with:
           go-version-file: ${{ env.E2E_DIR }}/go.mod
           check-latest: true
@@ -3443,7 +3496,8 @@ jobs:
         id: fabric-ipsec-e2e
         working-directory: ${{ env.E2E_DIR }}
         env:
-          E2E_BRANCH: ${{ github.base_ref || github.ref_name }}
+          GOWORK: 'off'
+          E2E_BRANCH: ${{ needs.e2e-selection.outputs.baseRef }}
         run: make fabric-ipsec-e2e
 
       - name: Collect k8s events
@@ -3515,6 +3569,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         id: setup-go
+        env: *base-go-environment
         with:
           go-version-file: ${{ env.E2E_DIR }}/go.mod
           check-latest: true
@@ -3562,7 +3617,8 @@ jobs:
         id: fabric-ipsec-cert-mgr-e2e
         working-directory: ${{ env.E2E_DIR }}
         env:
-          E2E_BRANCH: ${{ github.base_ref || github.ref_name }}
+          GOWORK: 'off'
+          E2E_BRANCH: ${{ needs.e2e-selection.outputs.baseRef }}
         run: make fabric-ipsec-cert-mgr-e2e
 
       - name: Collect k8s events
@@ -3638,6 +3694,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         id: setup-go
+        env: *base-go-environment
         with:
           go-version-file: ${{ env.E2E_DIR }}/go.mod
           check-latest: true
@@ -3685,7 +3742,8 @@ jobs:
         id: e2e
         working-directory: ${{ env.E2E_DIR }}
         env:
-          E2E_BRANCH: ${{ github.base_ref || github.ref_name }}
+          GOWORK: 'off'
+          E2E_BRANCH: ${{ needs.e2e-selection.outputs.baseRef }}
         run: make fabric-connectivity-e2e
 
       - name: kubectl ko log
@@ -3731,6 +3789,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         id: setup-go
+        env: *base-go-environment
         with:
           go-version-file: ${{ env.E2E_DIR }}/go.mod
           check-latest: true
@@ -3778,7 +3837,8 @@ jobs:
         id: fabric-underlay-metallb-e2e
         working-directory: ${{ env.E2E_DIR }}
         env:
-          E2E_BRANCH: ${{ github.base_ref || github.ref_name }}
+          GOWORK: 'off'
+          E2E_BRANCH: ${{ needs.e2e-selection.outputs.baseRef }}
           E2E_IP_FAMILY: ${{ matrix.ip-family }}
         run: make fabric-underlay-metallb-e2e
 
@@ -3849,6 +3909,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         id: setup-go
+        env: *base-go-environment
         with:
           go-version-file: ${{ env.E2E_DIR }}/go.mod
           check-latest: true
@@ -3896,7 +3957,8 @@ jobs:
         id: rlr-e2e
         working-directory: ${{ env.E2E_DIR }}
         env:
-          E2E_BRANCH: ${{ github.base_ref || github.ref_name }}
+          GOWORK: 'off'
+          E2E_BRANCH: ${{ needs.e2e-selection.outputs.baseRef }}
         run: make fabric-rlr-e2e
 
       - name: Collect k8s events
@@ -3965,6 +4027,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         id: setup-go
+        env: *base-go-environment
         with:
           go-version-file: ${{ env.E2E_DIR }}/go.mod
           check-latest: true
@@ -4012,7 +4075,8 @@ jobs:
         id: rlr-e2e
         working-directory: ${{ env.E2E_DIR }}
         env:
-          E2E_BRANCH: ${{ github.base_ref || github.ref_name }}
+          GOWORK: 'off'
+          E2E_BRANCH: ${{ needs.e2e-selection.outputs.baseRef }}
         run: make fabric-dns-zone-e2e
 
       - name: Collect k8s events

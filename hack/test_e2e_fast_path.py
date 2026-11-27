@@ -100,7 +100,7 @@ class FastPathTest(unittest.TestCase):
         self.assertNotIn("*restore-e2e-binaries", hosted)
         self.assertIn('directory: "."', hosted)
 
-    def test_all_base_suites_check_out_the_producer_revision(self):
+    def test_base_suite_checkouts_only_depend_on_binaries_when_needed(self):
         from hack.e2e_selector import workflowJobBlocks
         workflow = (ROOT / ".github/workflows/build-x86-image.yaml").read_text()
         jobs = workflowJobBlocks(workflow)
@@ -120,13 +120,87 @@ class FastPathTest(unittest.TestCase):
         source_only = set()
         for name, job in base_suites.items():
             with self.subTest(name=name):
-                self.assertIn("      - build-e2e-binaries\n", job.split("runs-on:")[0])
-                self.assertRegex(job, r"      - [*&]checkout-producer-source\n")
-                if "restore-e2e-binaries" not in job:
+                if "restore-e2e-binaries" in job:
+                    self.assertIn("      - build-e2e-binaries\n", job.split("runs-on:")[0])
+                    self.assertRegex(job, r"      - [*&]checkout-producer-source\n")
+                else:
+                    self.assertNotIn("build-e2e-binaries", job)
+                    self.assertIn("with: *approved-e2e-source", job)
                     source_only.add(name)
         self.assertEqual(source_only, {"cyclonus-netpol-e2e", "fabric-submariner-conformance-e2e"})
+        self.assertIn("with: &approved-e2e-source\n          ref: ${{ github.sha }}", producer)
         self.assertNotIn("uses: ./.github/actions/e2e-binaries", workflow)
         self.assertEqual(workflow.count("uses: ./test/e2e/source/.github/actions/e2e-binaries"), 2)
+
+    def test_go_workspace_and_branch_are_scoped_to_base_steps(self):
+        import os
+        import re
+        workflow = (ROOT / ".github/workflows/build-x86-image.yaml").read_text()
+        steps = re.split(r"(?m)^      - (?=\S)", workflow)
+        target = "E2E_BRANCH: ${{ needs.e2e-selection.outputs.baseRef }}"
+        for step in steps:
+            if "working-directory: ${{ env.E2E_DIR }}" in step:
+                self.assertIn("          GOWORK: 'off'\n", step)
+                self.assertIn(target, step)
+            elif "go-version-file: ${{ env.E2E_DIR }}/go.mod" in step:
+                self.assertRegex(step, r"env: (?:\*base-go-environment|&base-go-environment\n          GOWORK: 'off')")
+            else:
+                self.assertNotIn("GOWORK:", step)
+                self.assertNotIn("*base-go-environment", step)
+        hosted = workflow.split("- name: Run hosted OVN central E2E\n")[1].split("\n\n")[0]
+        self.assertIn(target, hosted)
+        producer = workflow.split("- name: Build and package source-bound binaries\n")[1].split("        run:")[0]
+        gowork = re.search(r"GOWORK: '([^']+)'", producer).group(1)
+        with tempfile.TemporaryDirectory() as tmp:
+            product = Path(tmp)
+            base = product / "base"
+            base.mkdir()
+            for directory, name in ((product, "product"), (base, "base")):
+                (directory / "go.mod").write_text(f"module example.test/{name}\n\ngo 1.20\n")
+            (product / "go.work").write_text("go 1.20\n\nuse .\n")
+            env = dict(os.environ, GOENV="off", GOPROXY="off", GOTOOLCHAIN="local")
+            env.pop("GOWORK", None)
+            for directory, settings, module in ((product, env, "product"), (base, env, "product"),
+                                                (base, dict(env, GOWORK=gowork), "base")):
+                got = subprocess.check_output(["go", "list", "-m"], cwd=directory, env=settings, text=True)
+                self.assertEqual(got.strip(), "example.test/" + module)
+
+    def test_verified_target_branch_controls_release_version(self):
+        import json
+        import os
+        import sys
+        import textwrap
+        workflow = (ROOT / ".github/workflows/build-x86-image.yaml").read_text()
+        validator = workflow.split('baseRef=$(python3 - "$INPUT_HEAD_SHA"')[1].split("<<'PY'\n")[1].split("\n          PY")[0]
+        self.assertIn('echo "baseRef=$baseRef" >> "$GITHUB_OUTPUT"', workflow)
+        self.assertIn("baseRef: ${{ steps.context.outputs.baseRef }}", workflow)
+        fallback = next(line.strip() for line in workflow.splitlines() if line.strip().startswith('baseRef="${'))
+        for pr_base, event_ref, expected in (("release-1.13", "48/merge", "release-1.13"),
+                                              ("", "main", "main"), ("", "release-1.13", "release-1.13")):
+            branch = subprocess.check_output(
+                ["bash", "-eu", "-c", fallback + '\nprintf "%s" "$baseRef"'], text=True,
+                env=dict(os.environ, GITHUB_BASE_REF=pr_base, GITHUB_REF_NAME=event_ref),
+            )
+            self.assertEqual(branch, expected)
+        head, base = "a" * 40, "b" * 40
+        with tempfile.TemporaryDirectory() as tmp:
+            request = {"state": "open", "head": {"sha": head}, "base": {"sha": base}}
+            command = [sys.executable, "-c", textwrap.dedent(validator), head, base, "x86-e2e/pr-48-a-1-d-2", base, "48"]
+            for branch, version in (("release-1.13", "1.13"), ("main", "999.999"), ("feature/test", None)):
+                request["base"]["ref"] = branch
+                (Path(tmp) / "pull-request.json").write_text(json.dumps(request))
+                result = subprocess.run(command, cwd=tmp, capture_output=True, text=True)
+                if version is None:
+                    self.assertNotEqual(result.returncode, 0)
+                    continue
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(), branch)
+                parsed = subprocess.check_output(
+                    ["make", "-s", "-f", str(ROOT / "makefiles/e2e.mk"), "-f", "-", "version"],
+                    input='version:\n\t@echo "$(VER_MAJOR).$(VER_MINOR)"\n', text=True,
+                    env=dict(os.environ, E2E_BRANCH=result.stdout.strip()), cwd=tmp,
+                )
+                self.assertEqual(parsed.strip(), version)
 
     def test_base_advance_preserves_source_and_rejects_wrong_build_or_restore(self):
         import os
@@ -192,16 +266,28 @@ class FastPathTest(unittest.TestCase):
             subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
                             "commit", "--allow-empty", "-qm", "head"], cwd=source, check=True)
             sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source).decode().strip()
+            # A scheduled producer can share this SHA while ignoring a candidate go.work.
+            workspace = source / "go.work"
+            workspace.write_text("go 1.20\n\nuse .\n")
+            (source / "go.mod").write_text("module example.test/candidate\n\ngo 1.20\n")
+            (source / ".e2e-prebuilt").write_text(sha + "\n")
+            binary = source / "test/e2e/kamaji/kamaji.test"
+            binary.parent.mkdir(parents=True)
+            binary.write_bytes(b"base-fixture")
+            binary.chmod(0o755)
             go = tools / "go"
             go.write_text("""#!/usr/bin/env python3
-import pathlib, sys
+import os, pathlib, sys
+if sys.argv[1:] == ["env", "GOWORK"]:
+    os.execv(os.environ["REAL_GO"], [os.environ["REAL_GO"], *sys.argv[1:]])
 target = pathlib.Path(sys.argv[sys.argv.index("-o") + 1])
 target.parent.mkdir(parents=True, exist_ok=True)
 target.write_bytes(b"hosted-fixture")
 target.chmod(0o755)
 """)
             go.chmod(0o755)
-            env = dict(os.environ, PATH=f"{tools}:{os.environ['PATH']}",
+            env = dict(os.environ, PATH=f"{tools}:{os.environ['PATH']}", REAL_GO=shutil.which("go"),
+                       GOWORK=str(workspace), GOTOOLCHAIN="local", GOPROXY="off",
                        RUNNER_TEMP=str(runner), GITHUB_OUTPUT=str(root / "output"))
             subprocess.run(["bash", "-c", packager], cwd=source, env=env, check=True)
             archive = runner / "hosted-binaries/binaries.tar"
@@ -218,6 +304,7 @@ target.chmod(0o755)
                        ARCHIVE=str(runner / archive_input))
             subprocess.run(["bash", "-c", verifier], env=env, check=True, capture_output=True)
             self.assertTrue(os.access(source / "test/e2e/kamaji/kamaji.test", os.X_OK))
+            self.assertEqual(binary.read_bytes(), b"hosted-fixture")
 
     def test_composite_verifier_rejects_cross_source_artifacts(self):
         import os
