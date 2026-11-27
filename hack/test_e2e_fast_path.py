@@ -168,28 +168,38 @@ class FastPathTest(unittest.TestCase):
     def test_verified_target_branch_controls_release_version(self):
         import json
         import os
-        import sys
         import textwrap
         workflow = (ROOT / ".github/workflows/build-x86-image.yaml").read_text()
-        validator = workflow.split('baseRef=$(python3 - "$INPUT_HEAD_SHA"')[1].split("<<'PY'\n")[1].split("\n          PY")[0]
+        dispatch = workflow.split('gh api "repos/$GITHUB_REPOSITORY/pulls/$INPUT_PR_NUMBER" > pull-request.json\n')[1]
+        validator = textwrap.dedent(dispatch.split("\n          PY\n")[0] + "\n          PY\n")
         self.assertIn('echo "baseRef=$baseRef" >> "$GITHUB_OUTPUT"', workflow)
         self.assertIn("baseRef: ${{ steps.context.outputs.baseRef }}", workflow)
-        fallback = next(line.strip() for line in workflow.splitlines() if line.strip().startswith('baseRef="${'))
+        fallback = next(line.strip() for line in workflow.splitlines() if 'base-ref --ref=' in line)
         for pr_base, event_ref, expected in (("release-1.13", "48/merge", "release-1.13"),
-                                              ("", "main", "main"), ("", "release-1.13", "release-1.13")):
-            branch = subprocess.check_output(
-                ["bash", "-eu", "-c", fallback + '\nprintf "%s" "$baseRef"'], text=True,
+                                              ("", "main", "main"), ("", "release-1.13", "release-1.13"),
+                                              ("", "release-next", None), ("release-1.13\n", "48/merge", None)):
+            result = subprocess.run(
+                ["bash", "-eu", "-c", fallback + '\nprintf "%s" "$baseRef"'], text=True, capture_output=True, cwd=ROOT,
                 env=dict(os.environ, GITHUB_BASE_REF=pr_base, GITHUB_REF_NAME=event_ref),
             )
-            self.assertEqual(branch, expected)
+            if expected is None:
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("unsupported x86 E2E base branch", result.stderr)
+            else:
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, expected)
         head, base = "a" * 40, "b" * 40
         with tempfile.TemporaryDirectory() as tmp:
             request = {"state": "open", "head": {"sha": head}, "base": {"sha": base}}
-            command = [sys.executable, "-c", textwrap.dedent(validator), head, base, "x86-e2e/pr-48-a-1-d-2", base, "48"]
-            for branch, version in (("release-1.13", "1.13"), ("main", "999.999"), ("feature/test", None)):
+            (Path(tmp) / "hack").symlink_to(ROOT / "hack", target_is_directory=True)
+            env = dict(os.environ, INPUT_HEAD_SHA=head, INPUT_BASE_SHA=base, INPUT_PR_NUMBER="48",
+                       GITHUB_SHA=base, GITHUB_REF_NAME="x86-e2e/pr-48-a-1-d-2")
+            command = ["bash", "-eu", "-c", validator + 'printf "%s" "$baseRef"']
+            for branch, version in (("release-1.13", "1.13"), ("main", "999.999"), ("feature/test", None),
+                                    ("release-next", None), ("release-1.13-mc", None), ("main\n", None)):
                 request["base"]["ref"] = branch
                 (Path(tmp) / "pull-request.json").write_text(json.dumps(request))
-                result = subprocess.run(command, cwd=tmp, capture_output=True, text=True)
+                result = subprocess.run(command, cwd=tmp, env=env, capture_output=True, text=True)
                 if version is None:
                     self.assertNotEqual(result.returncode, 0)
                     continue

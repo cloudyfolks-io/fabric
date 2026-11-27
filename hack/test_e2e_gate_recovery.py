@@ -23,7 +23,7 @@ class GateRecoveryTest(unittest.TestCase):
         self.pullRequest = {
             "state": "open",
             "head": {"sha": "a" * 40},
-            "base": {"sha": "b" * 40},
+            "base": {"sha": "b" * 40, "ref": "main"},
         }
         self.check = {
             "id": 100,
@@ -71,7 +71,8 @@ class GateRecoveryTest(unittest.TestCase):
         for change in (
             {"state": "closed"},
             {"head": {"sha": "c" * 40}},
-            {"base": {"sha": "c" * 40}},
+            {"base": {"sha": "c" * 40, "ref": "main"}},
+            {"base": {"sha": "b" * 40, "ref": "release-next"}},
         ):
             self.pullRequest = {**original, **change}
             self.assertIsNone(self.find())

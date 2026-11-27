@@ -10,6 +10,20 @@ import e2e_selector as e2eSelector
 
 
 groupPattern = r"[a-z0-9]+(?:-[a-z0-9]+)*"
+unsupportedBaseRef = "unsupported x86 E2E base branch: expected main or release-<major>.<minor>"
+
+
+def supportedBaseRef(ref):
+    if ref == "main":
+        return True
+    if not isinstance(ref, str):
+        return False
+    match = re.fullmatch(r"release-(0|[1-9][0-9]*)\.([0-9]+)", ref)
+    if not match:
+        return False
+    # ParseMajorMinor accepts zero-padded minors and parses uints on the x86-64 runner.
+    components = (part.lstrip("0") or "0" for part in match.groups())
+    return all(len(part) <= 20 and int(part) < (1 << 64) for part in components)
 
 
 def canonicalRequestedGroups(requestedGroups, full):
@@ -82,8 +96,8 @@ def decideDispatch(
     if confirmedHeadSHA != headSHA:
         return rejectedDecision(command, "pull request HEAD changed; comment again")
     baseRef = pullRequest.get("base", {}).get("ref")
-    if baseRef != "main" and not re.fullmatch(r"release-[A-Za-z0-9._-]+", baseRef or ""):
-        return rejectedDecision(command, "pull request base branch is not supported")
+    if not supportedBaseRef(baseRef):
+        return rejectedDecision(command, unsupportedBaseRef)
     baseSHA = pullRequest.get("base", {}).get("sha")
     if not re.fullmatch(r"[0-9a-f]{40}", baseSHA or ""):
         return rejectedDecision(command, "pull request base revision is invalid")
@@ -161,6 +175,8 @@ def mergeApprovedRequests(decision, priorRequests):
 
 
 def approvedRequest(pullRequest, catalog, commentPages):
+    if not supportedBaseRef(pullRequest["base"].get("ref")):
+        return None
     seed = {
         "prNumber": pullRequest["number"],
         "headSHA": pullRequest["head"]["sha"],
@@ -233,6 +249,8 @@ def parseApprovalIntent(body):
 
 
 def approvalIntents(pullRequest, catalog, commentPages):
+    if not supportedBaseRef(pullRequest["base"].get("ref")):
+        return []
     headSHA = pullRequest["head"]["sha"]
     baseSHA = pullRequest["base"]["sha"]
     catalogRevision = e2eSelector.catalogRevision(catalog)
@@ -467,9 +485,7 @@ def latestExecutorRun(
     catalogRevision=None,
     workflowSHA=None,
 ):
-    if baseRef != "main" and not re.fullmatch(
-        r"release-[A-Za-z0-9._-]+", baseRef or ""
-    ):
+    if not supportedBaseRef(baseRef):
         return None
     for run in runs:
         if (
@@ -494,6 +510,10 @@ def latestExecutorRun(
 def parseArgs():
     parser = argparse.ArgumentParser(description="Control comment-gated x86 E2E workflows")
     subparsers = parser.add_subparsers(dest="command", required=True)
+    branch = subparsers.add_parser("base-ref", help="Print a validated x86 E2E base branch")
+    source = branch.add_mutually_exclusive_group(required=True)
+    source.add_argument("--ref")
+    source.add_argument("--pull-request-file", type=Path)
     dispatch = subparsers.add_parser("dispatch")
     dispatch.add_argument("--event-file", dest="eventFile", required=True)
     dispatch.add_argument("--catalog", default=".github/e2e-selection.json")
@@ -506,6 +526,14 @@ def parseArgs():
 
 def main():
     args = parseArgs()
+    if args.command == "base-ref":
+        ref = args.ref
+        if args.pull_request_file is not None:
+            ref = json.loads(args.pull_request_file.read_text())["base"].get("ref")
+        if not supportedBaseRef(ref):
+            raise SystemExit(unsupportedBaseRef)
+        print(ref)
+        return
     if args.command == "dispatch":
         event = json.loads(Path(args.eventFile).read_text(encoding="utf-8"))
         catalog = json.loads(Path(args.catalog).read_text(encoding="utf-8"))

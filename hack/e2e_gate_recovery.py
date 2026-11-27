@@ -27,6 +27,7 @@ def pendingExecutor(runs, repository, api):
         pullRequest = api(f"pulls/{metadata['prNumber']}")
         if (
             pullRequest["state"] != "open"
+            or not e2eControl.supportedBaseRef(pullRequest["base"].get("ref"))
             or pullRequest["head"]["sha"] != metadata["headSHA"]
             or pullRequest["base"]["sha"] != run.get("head_sha")
         ):

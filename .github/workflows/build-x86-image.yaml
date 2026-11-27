@@ -161,7 +161,9 @@ jobs:
           forceFullReason=''
           requestedGroups='[]'
           headSHA="$GITHUB_SHA"
-          baseRef="${GITHUB_BASE_REF:-$GITHUB_REF_NAME}"
+          if [ "$EVENT_NAME" != workflow_dispatch ]; then
+            baseRef=$(python3 hack/e2e_control.py base-ref --ref="${GITHUB_BASE_REF:-$GITHUB_REF_NAME}")
+          fi
           prNumber=0
           checkedOutSHA=$(git rev-parse HEAD)
           if [ "$EVENT_NAME" = workflow_dispatch ] && [ "$checkedOutSHA" != "$INPUT_BASE_SHA" ]; then
@@ -198,7 +200,8 @@ jobs:
             prNumber="$PR_NUMBER"
           elif [ "$EVENT_NAME" = workflow_dispatch ]; then
             gh api "repos/$GITHUB_REPOSITORY/pulls/$INPUT_PR_NUMBER" > pull-request.json
-            baseRef=$(python3 - "$INPUT_HEAD_SHA" "$INPUT_BASE_SHA" "$GITHUB_REF_NAME" "$GITHUB_SHA" "$INPUT_PR_NUMBER" <<'PY'
+            baseRef=$(python3 hack/e2e_control.py base-ref --pull-request-file pull-request.json)
+            python3 - "$INPUT_HEAD_SHA" "$INPUT_BASE_SHA" "$GITHUB_REF_NAME" "$GITHUB_SHA" "$INPUT_PR_NUMBER" <<'PY'
           import json
           import re
           import sys
@@ -213,18 +216,13 @@ jobs:
               raise SystemExit("pull request HEAD changed; dispatch again")
           if pullRequest["base"]["sha"] != sys.argv[2]:
               raise SystemExit("pull request base revision changed; dispatch again")
-          baseRef = pullRequest["base"]["ref"]
-          if not re.fullmatch(r"main|release-[A-Za-z0-9._-]+", baseRef):
-              raise SystemExit("pull request base branch is not supported")
           if not re.fullmatch(rf"x86-e2e/pr-{sys.argv[5]}-a-[0-9]+-d-[0-9]+", sys.argv[3]):
               raise SystemExit("executor must run from its dispatched isolated ref")
           if sys.argv[4] != sys.argv[2]:
               raise SystemExit("executor workflow revision does not match the approved base")
           pullRequest["labels"] = []
           Path("selector-event.json").write_text(json.dumps({"pull_request": pullRequest}))
-          print(baseRef)
           PY
-            )
             gh api --paginate --slurp \
               "repos/$GITHUB_REPOSITORY/pulls/$INPUT_PR_NUMBER/files?per_page=100" > pull-request-files.json
             python3 - <<'PY'

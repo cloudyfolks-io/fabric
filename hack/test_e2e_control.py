@@ -112,17 +112,39 @@ class E2EControlTest(unittest.TestCase):
         self.assertFalse(decision["accepted"])
         self.assertEqual(decision["reason"], "pull request is not open")
 
-    def testUnsupportedBaseBranchIsRejected(self):
-        decision = self.dispatchDecision(baseRef="feature/test")
-
-        self.assertFalse(decision["accepted"])
-        self.assertEqual(decision["reason"], "pull request base branch is not supported")
+    def testOnlyNumericReleaseBasesCanDispatchOrRetry(self):
+        for ref in ("main", "release-1.13", "release-0.00", "release-1.013",
+                    "release-18446744073709551615.0"):
+            with self.subTest(ref=ref):
+                self.assertTrue(self.dispatchDecision(baseRef=ref)["accepted"])
+        for ref in ("release-next", "release-1.13-mc", "release-1.13.2", "release-v1.13",
+                    "feature/test", "release-1.13\n", "main\n", "release-01.13", "release-1.１３",
+                    "release-18446744073709551616.1", "release-1.18446744073709551616"):
+            for command in ("/test e2e", "/retest e2e-failed"):
+                with self.subTest(ref=ref, command=command):
+                    decision = self.dispatchDecision(baseRef=ref, body=command)
+                    self.assertFalse(decision["accepted"])
+                    self.assertEqual(decision["reason"], e2eControl.unsupportedBaseRef)
 
     def testUnknownRequestedGroupIsRejectedBeforeDispatch(self):
         decision = self.dispatchDecision(body="/test e2e not-a-group")
 
         self.assertFalse(decision["accepted"])
         self.assertEqual(decision["reason"], "unknown requested E2E group: not-a-group")
+
+    def testGateRejectsRetargetBeforeWritingRecoveredSuccess(self):
+        import os
+        workflow = (repoRoot / ".github/workflows/x86-e2e-gate.yaml").read_text()
+        # Exercise the actual last guard, including a retarget at the same SHA.
+        start = workflow.index('if ! jq -e --arg ref "$BASE_REF" \'.base.ref == $ref\' write-pull-request.json')
+        end = workflow.index('if [ "$writeBase" != "$BASE_SHA" ]', start)
+        self.assertLess(end, workflow.index("check-runs/$checkId", end))
+        with tempfile.TemporaryDirectory() as tmp:
+            for ref in ("release-1.13", "main", "release-next", "release-1.13\n"):
+                (Path(tmp) / "write-pull-request.json").write_text(json.dumps({"base": {"ref": ref}}))
+                result = subprocess.run(["bash", "-eu", "-c", workflow[start:end]], cwd=tmp,
+                                        env=dict(os.environ, BASE_REF="release-1.13"), capture_output=True)
+                self.assertEqual(result.returncode == 0, ref == "release-1.13", ref)
 
     def testUnrelatedCommentProducesNoDecision(self):
         self.assertIsNone(self.dispatchDecision(body="looks good"))
@@ -281,6 +303,8 @@ class E2EControlTest(unittest.TestCase):
         intents = e2eControl.approvalIntents(pullRequest, catalog, pages)
 
         self.assertEqual(intents, [intent])
+        pullRequest["base"]["ref"] = "release-next"
+        self.assertEqual(e2eControl.approvalIntents(pullRequest, catalog, pages), [])
 
     def testRerunAuthorizationMarkerBindsExactAttempt(self):
         marker = e2eControl.renderRerunMarker(42, 2, "a" * 40, "b" * 40)
@@ -361,6 +385,8 @@ class E2EControlTest(unittest.TestCase):
         self.assertEqual(request["approvalGeneration"], 1002)
         self.assertEqual(request["requestedGroups"], ["multi-cni", "policy"])
         self.assertEqual(request["baseSHA"], "b" * 40)
+        pullRequest["base"]["ref"] = "main\n"
+        self.assertIsNone(e2eControl.approvedRequest(pullRequest, catalog, pages))
 
     def testParsesTrustedExecutorRunName(self):
         request = {
@@ -466,6 +492,7 @@ class E2EControlTest(unittest.TestCase):
         latest = e2eControl.latestExecutorRun(runs, 7231, "a" * 40, "main")
 
         self.assertEqual(latest["id"], 3)
+        self.assertIsNone(e2eControl.latestExecutorRun(runs, 7231, "a" * 40, "release-1.13-extra"))
 
     def testLatestExecutorRunRequiresCurrentTargetRevision(self):
         run = {

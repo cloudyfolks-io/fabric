@@ -220,7 +220,7 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY/pulls/$prNumber" > pull-request.json
           currentHead=$(jq -r '.head.sha' pull-request.json)
           currentBaseSHA=$(jq -r '.base.sha' pull-request.json)
-          baseRef=$(jq -r '.base.ref' pull-request.json)
+          baseRef=$(python3 hack/e2e_control.py base-ref --pull-request-file pull-request.json)
           state=$(jq -r '.state' pull-request.json)
           if ! [[ "$currentBaseSHA" =~ ^[0-9a-f]{40}$ ]]; then
             echo 'Current pull request base revision is invalid.' >&2
@@ -232,10 +232,6 @@ jobs:
             trustedExecution=false
           fi
           trustedRef="$currentBaseSHA"
-          if ! [[ "$baseRef" == main || "$baseRef" =~ ^release-[A-Za-z0-9._-]+$ ]]; then
-            echo 'Pull request base branch is outside the supported trusted set.' >&2
-            exit 1
-          fi
           if [ "$RUN_EVENT" = workflow_dispatch ] && {
             [ "$RUN_ACTOR" != 'github-actions[bot]' ] || [ "$RUN_HEAD_BRANCH" != "$expectedExecutorRef" ];
           }; then
@@ -680,7 +676,7 @@ jobs:
             echo 'mutate=false' >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          baseRef=$(jq -r '.base.ref' pull-request.json)
+          baseRef=$(python3 hack/e2e_control.py base-ref --pull-request-file pull-request.json)
           gh api "repos/$GITHUB_REPOSITORY/contents/.github/e2e-selection.json?ref=$baseRef" \
             --jq '.content' | base64 --decode > trusted-catalog.json
           gh api --paginate --slurp \
@@ -859,6 +855,10 @@ jobs:
             exit 0
           fi
           currentBaseSHA=$(jq -r '.base.sha' final-pull-request.json)
+          if ! jq -e --arg ref "$BASE_REF" '.base.ref == $ref' final-pull-request.json > /dev/null; then
+            echo 'Pull request target branch changed before gate reconciliation.' >&2
+            exit 1
+          fi
           if [ "$currentBaseSHA" != "$BASE_SHA" ]; then
             RUN_ACTION=base_refresh
             STATUS=completed
@@ -1088,6 +1088,7 @@ jobs:
               "prNumber": int(os.environ["PR_NUMBER"]),
               "headSHA": os.environ["HEAD_SHA"],
               "baseSHA": os.environ["BASE_SHA"],
+              "baseRef": os.environ["BASE_REF"],
               "catalogRevision": os.environ["CATALOG_REVISION"],
               "runId": int(sys.argv[1]),
               "runAttempt": int(sys.argv[2]),
@@ -1355,6 +1356,7 @@ jobs:
               "prNumber": int(os.environ["PR_NUMBER"]),
               "headSHA": os.environ["HEAD_SHA"],
               "baseSHA": os.environ["BASE_SHA"],
+              "baseRef": os.environ["BASE_REF"],
               "catalogRevision": os.environ["CATALOG_REVISION"],
               "runId": int(sys.argv[1]),
               "runAttempt": int(sys.argv[2]),
@@ -1474,6 +1476,10 @@ jobs:
           writeBase=$(jq -r '.base.sha' write-pull-request.json)
           if [ "$writeState" != open ] || [ "$writeHead" != "$HEAD_SHA" ]; then
             exit 0
+          fi
+          if ! jq -e --arg ref "$BASE_REF" '.base.ref == $ref' write-pull-request.json > /dev/null; then
+            echo 'Pull request target branch changed before the gate write.' >&2
+            exit 1
           fi
           if [ "$writeBase" != "$BASE_SHA" ]; then
             RUN_ACTION=base_refresh
