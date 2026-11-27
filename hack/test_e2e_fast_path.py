@@ -35,10 +35,54 @@ class FastPathTest(unittest.TestCase):
         for inputs in uploads:
             if "          retention-days: 1\n" in inputs:
                 one_day.add(re.search(r"^          name: (.+)$", inputs, re.M).group(1))
-        suffix = "${{ github.run_id }}-${{ github.run_attempt }}"
         self.assertEqual(one_day, {
-            "fabric", "fabric-dpdk", f"e2e-binaries-{suffix}", f"e2e-hosted-binaries-{suffix}",
+            "fabric", "fabric-dpdk", "fabric-base", "fabric-dpdk-base",
+            "${{ steps.artifacts.outputs.base }}", "${{ steps.artifacts.outputs.hosted }}",
         })
+        plan, = [inputs for inputs in uploads if "name: x86-e2e-selection-" in inputs]
+        self.assertIn("          retention-days: 30\n", plan)
+        gate = (ROOT / ".github/workflows/x86-e2e-gate.yaml").read_text()
+        self.assertIn("          path: gate-mutation.json\n          retention-days: 7\n", gate)
+
+    def test_partial_rerun_uses_retained_producer_outputs(self):
+        import os
+        import re
+        import textwrap
+        workflow = (ROOT / ".github/workflows/build-x86-image.yaml").read_text()
+        producer = workflow.split("  build-e2e-binaries:\n")[1].split("\n  netpol-path-filter:")[0]
+        script = textwrap.dedent(producer.split("id: artifacts\n        run: |\n")[1].split("\n\n")[0])
+        action = (ROOT / ".github/actions/e2e-binaries/action.yml").read_text()
+        guard, download = action.split("    - uses: actions/download-artifact@v8\n")
+        self.assertIn("ARTIFACT_NAME: ${{ inputs.artifact-name }}", guard)
+        validate = re.search(r"^      run: '(.+)'$", guard, re.M).group(1)
+        self.assertIn("        name: ${{ inputs.artifact-name }}\n", download)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "outputs"
+            env = dict(os.environ, GITHUB_RUN_ID="315", GITHUB_RUN_ATTEMPT="1", GITHUB_OUTPUT=str(output))
+            subprocess.run(["bash", "-ec", script], env=env, check=True)
+            names = dict(line.split("=", 1) for line in output.read_text().splitlines())
+            env["GITHUB_RUN_ATTEMPT"] = "2"
+            for kind, job_output, expected, archive in (
+                ("base", "artifactName", "e2e-binaries-315-1", "binaries.tar"),
+                ("hosted", "hostedArtifactName", "e2e-hosted-binaries-315-1", "hosted-binaries/binaries.tar"),
+            ):
+                with self.subTest(kind=kind):
+                    step_value = "${{ steps.artifacts.outputs." + kind + " }}"
+                    self.assertIn(f"{job_output}: {step_value}\n", producer)
+                    path = "${{ runner.temp }}/" + archive
+                    self.assertIn(f"name: {step_value}\n          path: {path}\n", producer)
+                    self.assertIn("artifact-name: ${{ needs.build-e2e-binaries.outputs." + job_output + " }}", workflow)
+                    self.assertEqual(names[kind], expected)
+                    subprocess.run(["bash", "-ec", validate], env=dict(env, ARTIFACT_NAME=names[kind]), check=True)
+            for missing in ("", "  "):
+                result = subprocess.run(["bash", "-ec", validate], env=dict(env, ARTIFACT_NAME=missing))
+                self.assertNotEqual(result.returncode, 0)
+            env["GITHUB_OUTPUT"] = str(Path(tmp) / "rebuilt")
+            subprocess.run(["bash", "-ec", script], env=env, check=True)
+            self.assertEqual(Path(env["GITHUB_OUTPUT"]).read_text().splitlines(), [
+                "base=e2e-binaries-315-2", "hosted=e2e-hosted-binaries-315-2",
+            ])
 
     def test_hosted_artifact_matches_its_candidate_checkout(self):
         workflow = (ROOT / ".github/workflows/build-x86-image.yaml").read_text()
@@ -51,7 +95,7 @@ class FastPathTest(unittest.TestCase):
         self.assertIn("path: ${{ runner.temp }}/hosted-binaries/binaries.tar", producer)
         self.assertIn("ref: ${{ inputs.headSHA || github.sha }}", hosted)
         self.assertIn("source-sha: ${{ needs.build-e2e-binaries.outputs.hostedSourceSHA }}", hosted)
-        self.assertIn("artifact-name: e2e-hosted-binaries-${{ github.run_id }}-${{ github.run_attempt }}", hosted)
+        self.assertIn("artifact-name: ${{ needs.build-e2e-binaries.outputs.hostedArtifactName }}", hosted)
         self.assertNotIn("*restore-e2e-binaries", hosted)
         self.assertIn('directory: "."', hosted)
 

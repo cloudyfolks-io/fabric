@@ -8,14 +8,19 @@ inputs:
     default: "."
     description: Checked out E2E source directory
   artifact-name:
-    default: ""
-    description: Same-run artifact for this exact source tree
+    required: true
+    description: Same-run artifact name exported by the producer
 runs:
   using: composite
   steps:
+    - name: Require a producer artifact name before download
+      shell: bash
+      env:
+        ARTIFACT_NAME: ${{ inputs.artifact-name }}
+      run: '[[ "$ARTIFACT_NAME" =~ [^[:space:]] ]]'
     - uses: actions/download-artifact@v8
       with:
-        name: ${{ inputs.artifact-name || format('e2e-binaries-{0}-{1}', github.run_id, github.run_attempt) }}
+        name: ${{ inputs.artifact-name }}
         path: ${{ runner.temp }}/e2e-binaries
     - shell: bash
       env:
