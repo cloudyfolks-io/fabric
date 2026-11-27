@@ -747,8 +747,7 @@ class E2EControlTest(unittest.TestCase):
         self.assertIn("The latest completed executor decision artifact is not available yet", workflow)
         self.assertIn("Durable approval coverage changed before the serialized gate mutation", workflow)
         self.assertIn("liveBaseSHA=$(jq -r '.base.sha' pull-request.json)", workflow)
-        self.assertIn('if [ "$BASE_REFRESH" = true ]; then', workflow)
-        self.assertIn('if [ "$BASE_REFRESH" != true ] && [ -n "$duplicate" ]; then', workflow)
+        self.assertIn('if [ -n "$duplicate" ]; then', workflow)
         self.assertIn('[ "$liveBaseSHA" != "$BASE_SHA" ]', workflow)
         self.assertIn('metadata["executorHeadBranch"] = e2eControl.executorHeadBranch(metadata)', workflow)
         self.assertIn('[ "$RUN_HEAD_BRANCH" != "$expectedExecutorRef" ]', workflow)
@@ -762,7 +761,7 @@ class E2EControlTest(unittest.TestCase):
             workflow.index('gh api --method PATCH "repos/$GITHUB_REPOSITORY/check-runs/$checkId"'),
         )
         self.assertIn("RUN_REQUEST_KEY: ${{ needs.gate.outputs.mutate == 'true'", workflow)
-        self.assertIn("inputs.baseRefresh && 'base_refresh'", workflow)
+        self.assertIn("inputs.recordIntent && 'approval' || 'reservation'", workflow)
         self.assertIn("Queued x86 E2E approval intent", workflow)
         self.assertIn("Recorded x86 E2E approval", workflow)
         self.assertLess(

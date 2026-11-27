@@ -125,13 +125,13 @@ jobs:
               | jq -r --arg id "x86-e2e-pr-$prNumber-$headSHA" \
                 'any(.[].check_runs[]; .app.slug == "github-actions" and .external_id == $id)')
             [ "$hasGate" = true ] || continue
+            # Old default-branch gates reject undeclared inputs, including baseRef.
             gh api --method POST \
               "repos/$GITHUB_REPOSITORY/actions/workflows/x86-e2e-gate.yaml/dispatches" \
               -f ref="$(jq -r '.repository.default_branch' "$GITHUB_EVENT_PATH")" \
               -f "inputs[prNumber]=$prNumber" \
               -f "inputs[headSHA]=$headSHA" \
               -f "inputs[baseSHA]=$GITHUB_SHA" \
-              -f "inputs[baseRef]=$GITHUB_REF_NAME" \
               -f 'inputs[approvalGeneration]=1' \
               -f "inputs[catalogRevision]=$catalogRevision" \
               -f 'inputs[requestedGroups]=[]' \

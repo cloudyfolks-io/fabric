@@ -27,7 +27,7 @@ on:
         required: true
         type: string
       baseRef:
-        description: Original approved target branch (unused for executor recovery)
+        description: Original target branch for approval and reservation
         required: false
         type: string
       approvalGeneration:
@@ -76,7 +76,7 @@ jobs:
       PR_NUMBER: ${{ github.event.pull_request.number }}
       EDITED_AT: ${{ github.event.pull_request.updated_at }}
     steps:
-      - name: Record the edit before queuing a replaceable check writer
+      - name: Record the edit before queuing the check writer
         shell: python
         run: |
           import json
@@ -119,7 +119,7 @@ jobs:
 
   retarget:
     needs: record-retarget
-    if: github.event_name == 'pull_request_target' && github.event.changes.base.ref.from != ''
+    if: always() && github.event_name == 'pull_request_target' && github.event.action == 'edited' && github.event.changes.base.ref.from != ''
     runs-on: ubuntu-24.04
     permissions:
       pull-requests: read
@@ -127,11 +127,13 @@ jobs:
     concurrency:
       group: x86-e2e-required-gate-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
       cancel-in-progress: false
+      queue: max
     env:
       GH_TOKEN: ${{ github.token }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       EDITED_AT: ${{ github.event.pull_request.updated_at }}
+      RECORDER_RESULT: ${{ needs.record-retarget.result }}
     steps:
       - &reconcile_target
         name: Reconcile the fixed check against the live target
@@ -196,6 +198,7 @@ jobs:
               return edit_seen and approval is not None and (latest_edit is None or approval > latest_edit)
 
           def invalidate(number, head, edited_at=None):
+              may_preserve = edited_at is None or os.environ.get("RECORDER_RESULT") == "success"
               name = "x86-e2e / required-gate"
               external_id = f"x86-e2e-pr-{number}-{head}"
               pages = api(
@@ -220,7 +223,7 @@ jobs:
                               conclusion = check["conclusion"]
                               if conclusion not in {"success", "skipped", "neutral"}:
                                   continue
-                              if conclusion == "success" and fresh_approval(number, lines, edited_at):
+                              if conclusion == "success" and may_preserve and fresh_approval(number, lines, edited_at):
                                   continue
                       except (subprocess.CalledProcessError, OSError, ValueError, KeyError, TypeError, AttributeError) as error:
                           print(f"Could not verify retarget evidence: {type(error).__name__}")
@@ -271,6 +274,7 @@ jobs:
     concurrency:
       group: x86-e2e-required-gate-${{ needs.discover.outputs.stalePR }}-${{ needs.discover.outputs.staleHead }}
       cancel-in-progress: false
+      queue: max
     env:
       PR_NUMBER: ${{ needs.discover.outputs.stalePR }}
       HEAD_SHA: ${{ needs.discover.outputs.staleHead }}
@@ -284,7 +288,7 @@ jobs:
     if: >-
       always() && (
       (github.event_name == 'schedule' && needs.discover.outputs.runId != '') ||
-      (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && inputs.executorRunID != '') ||
+      (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && !inputs.baseRefresh && inputs.executorRunID != '') ||
       (github.event_name == 'workflow_run' &&
       (github.event.workflow_run.event == 'pull_request' ||
        github.event.workflow_run.event == 'workflow_dispatch')))
@@ -819,9 +823,27 @@ jobs:
           path: gate-mutation.json
           retention-days: 7
 
+  base-refresh:
+    name: Invalidate stale x86 E2E evidence after a base update
+    if: github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.actor == 'github-actions[bot]' && inputs.executorRunID == '' && inputs.baseRefresh
+    runs-on: ubuntu-24.04
+    permissions:
+      pull-requests: read
+      checks: write
+    concurrency:
+      group: x86-e2e-required-gate-${{ inputs.prNumber }}-${{ inputs.headSHA }}
+      cancel-in-progress: false
+      queue: max
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR_NUMBER: ${{ inputs.prNumber }}
+      HEAD_SHA: ${{ inputs.headSHA }}
+    steps:
+      - *reconcile_target
+
   approval:
     name: Reconcile a durable x86 E2E approval
-    if: github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && inputs.executorRunID == '' && github.actor == 'github-actions[bot]'
+    if: github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && inputs.executorRunID == '' && !inputs.baseRefresh && github.actor == 'github-actions[bot]'
     outputs:
       mutate: ${{ steps.request.outputs.mutate }}
       status: ${{ steps.request.outputs.status }}
@@ -841,7 +863,7 @@ jobs:
       sourceRequestedGroups: ${{ inputs.requestedGroups }}
       sourceFull: ${{ inputs.full }}
       trustedExecution: "true"
-      runAction: ${{ inputs.baseRefresh && 'base_refresh' || (inputs.recordIntent && 'approval' || 'reservation') }}
+      runAction: ${{ inputs.recordIntent && 'approval' || 'reservation' }}
       runAttempt: "0"
       runId: "0"
       runURL: ${{ steps.request.outputs.runURL }}
@@ -865,7 +887,6 @@ jobs:
           APPROVAL_GENERATION: ${{ inputs.approvalGeneration }}
           BASE_SHA: ${{ inputs.baseSHA }}
           BASE_REF: ${{ inputs.baseRef }}
-          BASE_REFRESH: ${{ inputs.baseRefresh }}
           CATALOG_REVISION: ${{ inputs.catalogRevision }}
           FULL: ${{ inputs.full }}
           HEAD_SHA: ${{ inputs.headSHA }}
@@ -890,9 +911,7 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY/contents/.github/e2e-selection.json?ref=$BASE_SHA" \
             --jq '.content' | base64 --decode > trusted-catalog.json
           python3 hack/e2e_target_history.py comments "$PR_NUMBER" --generations-file fresh-generations.json > pull-request-comments.json
-          if [ "$BASE_REFRESH" != true ]; then
-            jq -e --argjson generation "$APPROVAL_GENERATION" 'index($generation) != null' fresh-generations.json > /dev/null
-          fi
+          jq -e --argjson generation "$APPROVAL_GENERATION" 'index($generation) != null' fresh-generations.json > /dev/null
           python3 - <<'PY' > cumulative-request.json
           import json
           import os
@@ -979,19 +998,15 @@ jobs:
                   print(latest["id"])
           PY
           )
-          if [ "$BASE_REFRESH" != true ] && [ -n "$duplicate" ]; then
+          if [ -n "$duplicate" ]; then
             echo 'mutate=false' >> "$GITHUB_OUTPUT"
             exit 0
-          fi
-          summary='The latest authorized x86 E2E approval is waiting for its trusted executor.'
-          if [ "$BASE_REFRESH" = true ]; then
-            summary='The pull request target branch advanced; authorize x86 E2E again for the new base revision.'
           fi
           {
             echo 'mutate=true'
             echo 'status=completed'
             echo 'conclusion=action_required'
-            echo "summary=$summary"
+            echo 'summary=The latest authorized x86 E2E approval is waiting for its trusted executor.'
             echo "approvalGeneration=$(jq -r '.approvalGeneration' cumulative-request.json)"
             echo "baseRef=$baseRef"
             echo "baseSHA=$(jq -r '.base.sha' pull-request.json)"
@@ -1013,6 +1028,7 @@ jobs:
     concurrency:
       group: x86-e2e-required-gate-${{ needs.gate.outputs.mutate == 'true' && needs.gate.outputs.prNumber || needs.approval.outputs.prNumber }}-${{ needs.gate.outputs.mutate == 'true' && needs.gate.outputs.headSHA || needs.approval.outputs.headSHA }}
       cancel-in-progress: false
+      queue: max
     runs-on: ubuntu-24.04
     permissions:
       actions: write

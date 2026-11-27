@@ -3,6 +3,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 import textwrap
 import time
 import unittest
@@ -38,7 +39,7 @@ class RetargetTest(unittest.TestCase):
             "output": {"title": "x86 E2E gate", "text": MARKER, "summary": "Passed"},
         }
 
-    def run_handler(self, checks, live=None, timeline=None, edited_at=EDIT["created_at"]):
+    def run_handler(self, checks, live=None, timeline=None, edited_at=EDIT["created_at"], recorder_result="success"):
         self.api.reset_mock()
 
         def respond(path, *args, **kwargs):
@@ -62,6 +63,7 @@ class RetargetTest(unittest.TestCase):
         env = {"PR_NUMBER": "7", "HEAD_SHA": HEAD, "GITHUB_REPOSITORY": "org/repo"}
         if edited_at is not None:
             env["EDITED_AT"] = edited_at
+            env["RECORDER_RESULT"] = recorder_result
 
         def gh(command, *, input, text):
             self.assertEqual(command[:2], ["gh", "api"])
@@ -81,13 +83,18 @@ class RetargetTest(unittest.TestCase):
         jobs = dict(zip(sections[1::2], sections[2::2]))
         retarget = jobs["retarget"]
         recorder = jobs["record-retarget"]
+        # The default single pending slot lets a later writer replace a queued failed-recorder invalidation.
+        for job in jobs.values():
+            if "group: x86-e2e-required-gate-" in job:
+                self.assertRegex(job, r"group: x86-e2e-required-gate-[^\n]+\n      cancel-in-progress: false\n      queue: max\n")
         self.assertIn("    needs: record-retarget\n", retarget)
         self.assertIn("github.event_name == 'pull_request_target' && github.event.changes.base.ref.from != ''", recorder)
         self.assertNotIn("uses:", recorder)
         self.assertEqual(re.findall(r"^      ([\w-]+: (?:read|write))$", recorder, re.M), ["issues: write"])
         self.assertIn("EDITED_AT: ${{ github.event.pull_request.updated_at }}", recorder)
-        self.assertIn("    if: github.event_name == 'pull_request_target' && "
+        self.assertIn("    if: always() && github.event_name == 'pull_request_target' && github.event.action == 'edited' && "
                       "github.event.changes.base.ref.from != ''\n", retarget)
+        self.assertIn("      RECORDER_RESULT: ${{ needs.record-retarget.result }}\n", retarget)
         self.assertIn("group: x86-e2e-required-gate-${{ github.event.pull_request.number }}"
                       "-${{ github.event.pull_request.head.sha }}", retarget)
         self.assertIn("cancel-in-progress: false", retarget)
@@ -133,6 +140,57 @@ class RetargetTest(unittest.TestCase):
         self.check["output"]["text"] = "\n".join([MARKER, TARGET, "other metadata"])
         older = dict(EDIT, created_at="2026-11-19T08:00:00Z")
         self.assertFalse(self.run_handler([self.check], timeline=[[older], [EDIT, COMMAND]]))
+
+    def test_release_refresh_uses_legacy_dispatch_schema_and_can_only_invalidate(self):
+        dispatcher = (WORKFLOWS / "x86-e2e-dispatcher.yaml").read_text()
+        refresh = dispatcher.split("\n  invalidate-base:\n")[1].split("\n  dispatch:\n")[0]
+        post = refresh[refresh.index("gh api --method POST"):refresh.index("done < open-pulls.tsv")]
+        # Capture the actual gh arguments. The old default-branch gate (a9beb961)
+        # requires these nine inputs; its only optional input is executorRunID.
+        with tempfile.TemporaryDirectory() as directory:
+            event = Path(directory, "event.json")
+            event.write_text(json.dumps({"repository": {"default_branch": "main"}}))
+            args = subprocess.check_output(
+                ["bash", "-eu", "-c", 'gh() { printf "%s\\n" "$@"; }\n' + post],
+                env=dict(os.environ, GITHUB_EVENT_PATH=str(event), GITHUB_REF_NAME="release-1.2",
+                         GITHUB_REPOSITORY="org/repo", prNumber="7", headSHA=HEAD,
+                         GITHUB_SHA=BASE, catalogRevision="b" * 64), text=True,
+            ).splitlines()
+        self.assertEqual(args[:4], ["api", "--method", "POST", "repos/org/repo/actions/workflows/x86-e2e-gate.yaml/dispatches"])
+        self.assertEqual(args[4::2], ["-f"] * 10)
+        fields = dict(field.split("=", 1) for field in args[5::2])
+        self.assertEqual(fields, {
+            "ref": "main", "inputs[prNumber]": "7", "inputs[headSHA]": HEAD, "inputs[baseSHA]": BASE,
+            "inputs[approvalGeneration]": "1", "inputs[catalogRevision]": "b" * 64,
+            "inputs[requestedGroups]": "[]", "inputs[full]": "false",
+            "inputs[recordIntent]": "false", "inputs[baseRefresh]": "true",
+        })
+        declarations = WORKFLOW.split("\n    inputs:\n", 1)[1].split("\npermissions:", 1)[0]
+        required = re.findall(r"^      (\w+):\n(?:        [^\n]*\n)*?        required: true$", declarations, re.M)
+        self.assertEqual({f"inputs[{name}]" for name in required}, fields.keys() - {"ref"})
+        job, approval = WORKFLOW.split("\n  base-refresh:\n")[1].split("\n  approval:\n")
+        self.assertIn("inputs.executorRunID == '' && inputs.baseRefresh", job)
+        self.assertIn("group: x86-e2e-required-gate-${{ inputs.prNumber }}-${{ inputs.headSHA }}", job)
+        self.assertEqual(job.split("    steps:\n")[1].strip(), "- *reconcile_target")
+        self.assertIn("!inputs.baseRefresh", approval.split("    outputs:")[0])
+        self.assertIn("!inputs.baseRefresh && inputs.executorRunID != ''", WORKFLOW)
+        # A previous approval for the same head and branch cannot preserve an old base SHA.
+        self.check["output"]["text"] = f"{MARKER}\n{TARGET.replace(BASE, '3' * 40)}"
+        update, = self.run_handler([self.check], edited_at=None)
+        self.assertEqual(update.kwargs["body"]["conclusion"], "action_required")
+
+    def test_unsuccessful_recorder_invalidates_even_fresh_green_once(self):
+        self.check["output"]["text"] = f"{MARKER}\n{TARGET}"
+        # A timed-out recorder also yields needs.record-retarget.result == 'failure'.
+        for result in ("failure", "cancelled", "skipped"):
+            with self.subTest(result=result):
+                patches = self.run_handler([self.check], timeline=[[EDIT, COMMAND]], recorder_result=result)
+                patch, = patches
+                body = patch.kwargs["body"]
+                self.assertEqual((body["status"], body["conclusion"]), ("completed", "action_required"))
+                self.assertEqual(body["output"]["text"], self.check["output"]["text"])
+                self.assertFalse(any("timeline" in call.args[0] for call in self.api.call_args_list))
+                self.assertFalse(self.run_handler([dict(self.check, **body)], recorder_result=result))
 
     def test_normal_mutation_green_without_any_target_edit(self):
         self.check["output"]["text"] = f"{MARKER}\n{TARGET}"
