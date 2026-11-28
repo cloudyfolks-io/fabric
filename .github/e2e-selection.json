@@ -1,5 +1,6 @@
 {
   "schemaVersion": 1,
+  "targetBindingVersion": 1,
   "expectedRunnerJobs": 72,
   "forceFull": false,
   "fullThreshold": 3,
@@ -14,6 +15,9 @@
     ".github/workflows/**",
     "hack/e2e_selector.py",
     "hack/e2e_control.py",
+    "hack/e2e_target_history.py",
+    "hack/e2e_invalidate.py",
+    "hack/verify-e2e-receiver-v1.sh",
     "hack/test_e2e_selector.py",
     "hack/test_e2e_control.py",
     "Makefile",

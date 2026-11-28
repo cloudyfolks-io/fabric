@@ -19,6 +19,7 @@ infrastructureJobs = {
     "build-e2e-binaries",
     "netpol-path-filter",
     "e2e-selection",
+    "e2e-control-tests",
     "e2e-executor-result",
 }
 expectedX86RunnerJobs = 72
@@ -513,6 +514,8 @@ def parseArgs():
     parser.add_argument("--request-group", dest="requestGroup", action="append", default=[])
     parser.add_argument("--request-groups-json", dest="requestGroupsJSON", default="[]")
     parser.add_argument("--head-sha", dest="headSHA", required=True)
+    parser.add_argument("--base-ref", dest="baseRef")
+    parser.add_argument("--base-sha", dest="baseSHA")
     parser.add_argument("--force-full-reason", dest="forceFullReason", default="")
     parser.add_argument("--plan-file", dest="planFile", required=True)
     parser.add_argument("--summary-file", dest="summaryFile")
@@ -527,7 +530,7 @@ def main():
     except Exception as error:
         workflow = Path(args.workflow).read_text(encoding="utf-8")
         plan = fallbackPlan(args.headSHA, error, workflow, "selection")
-        writePlan(plan, paths, args.planFile, args.summaryFile)
+        writePlan(plan, paths, args)
         return
     try:
         catalog = loadCatalog(args.catalog)
@@ -553,13 +556,17 @@ def main():
         except Exception as error:
             workflow = Path(args.workflow).read_text(encoding="utf-8")
             plan = fallbackPlan(args.headSHA, error, workflow, "selection")
-    writePlan(plan, paths, args.planFile, args.summaryFile)
+    writePlan(plan, paths, args)
 
 
-def writePlan(plan, paths, planFile, summaryFile):
-    Path(planFile).write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
-    if summaryFile:
-        Path(summaryFile).write_text(renderSummary(plan, paths), encoding="utf-8")
+def writePlan(plan, paths, args):
+    if args.baseRef is not None or args.baseSHA is not None:
+        if not args.baseRef or not args.baseSHA:
+            raise ValueError("--base-ref and --base-sha must be supplied together")
+        plan.update(baseRef=args.baseRef, baseSHA=args.baseSHA)
+    Path(args.planFile).write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
+    if args.summaryFile:
+        Path(args.summaryFile).write_text(renderSummary(plan, paths), encoding="utf-8")
 
 
 if __name__ == "__main__":
