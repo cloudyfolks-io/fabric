@@ -420,7 +420,8 @@ jobs:
 
   build-fabric-base:
     name: Build fabric-base
-    if: github.event_name != 'workflow_dispatch' || github.actor == 'github-actions[bot]'
+    needs: e2e-selection
+    if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || needs.e2e-selection.result == 'success') }}
     runs-on: ubuntu-24.04
     outputs:
       build-base: ${{ steps.check.outputs.build-base }}
@@ -492,7 +493,8 @@ jobs:
 
   build-fabric-dpdk-base:
     name: Build fabric-dpdk-base
-    if: github.event_name != 'workflow_dispatch' || github.actor == 'github-actions[bot]'
+    needs: e2e-selection
+    if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || needs.e2e-selection.result == 'success') }}
     runs-on: ubuntu-24.04
     outputs:
       build-dpdk-base: ${{ steps.check.outputs.build-dpdk-base }}
@@ -546,6 +548,8 @@ jobs:
 
   lint-ut:
     name: Lint and unit test
+    needs: e2e-selection
+    if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || needs.e2e-selection.result == 'success') }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -598,7 +602,7 @@ jobs:
   build-fabric-dpdk:
     name: Build fabric dpdk
     runs-on: ubuntu-24.04
-    if: github.event_name != 'pull_request'
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.build-fabric-dpdk-base.result == 'success' }}
     needs:
       - build-fabric-dpdk-base
     steps:

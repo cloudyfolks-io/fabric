@@ -8,6 +8,26 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class FastPathTest(unittest.TestCase):
+    def test_dispatch_builds_require_successful_selection(self):
+        from hack.e2e_selector import workflowJobBlocks
+        workflow = (ROOT / ".github/workflows/build-x86-image.yaml").read_text()
+        jobs = workflowJobBlocks(workflow)
+        self.assertIn("    if: github.event_name != 'workflow_dispatch' || github.actor == 'github-actions[bot]'\n",
+                      jobs["e2e-selection"].split("    steps:\n")[0])
+        gate = ("${{ !cancelled() && (github.event_name != 'workflow_dispatch' || "
+                "needs.e2e-selection.result == 'success') }}")
+        for name in ("build-fabric-base", "build-fabric-dpdk-base", "lint-ut"):
+            with self.subTest(job=name):
+                header = jobs[name].split("    steps:\n")[0]
+                self.assertIn("    needs: e2e-selection\n", header)
+                self.assertIn(f"    if: {gate}\n", header)
+
+        # DPDK requires its gated base, even when selection failed on a non-dispatch event.
+        dpdk = jobs["build-fabric-dpdk"].split("    steps:\n")[0]
+        self.assertIn("    needs:\n      - build-fabric-dpdk-base\n", dpdk)
+        self.assertIn("    if: ${{ !cancelled() && github.event_name != 'pull_request' && "
+                      "needs.build-fabric-dpdk-base.result == 'success' }}\n", dpdk)
+
     def test_embedded_python_compiles(self):
         import re
         import textwrap
