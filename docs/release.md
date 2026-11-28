@@ -39,6 +39,9 @@ Keep the v1 endpoint and verifier available until all v1 senders are retired.
 Install the receiver with optional `pushedRef`, `pushedSHA` and `forcedPush` inputs on
 `main` before enabling senders that include them. Earlier v1 senders omit
 these inputs; the upgraded receiver still checks the current branch tip.
+The pre-v1 `baseRefresh` endpoint checks that tip too. The verifier uses
+Python 3 with PyYAML to read the dispatch schema at the active default-branch
+revision. Both release selection and the sender require its push-target receipt.
 For a delayed delivery on the same branch, keeping a newer success requires
 proof that the current tip descends from the pushed revision. After an
 ambiguous force-push, authorize again for the current target.

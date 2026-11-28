@@ -11,6 +11,8 @@ import e2e_selector as e2eSelector
 
 groupPattern = r"[a-z0-9]+(?:-[a-z0-9]+)*"
 invalidationSummary = "Pull request target changed; authorize x86 E2E again for the current target."
+supersededSummary = "A newer fixed x86 E2E check has been issued for this pull request HEAD."
+supersededPrefix = "x86-e2e-superseded-approval "
 cutoffPrefix = "x86-e2e-invalidated-at "
 unsupportedBaseRef = "unsupported x86 E2E base branch: expected main or release-<major>.<minor>"
 
@@ -527,15 +529,20 @@ def executorHeadBranch(request):
     )
 
 
-def matchesExecutorCheck(check, metadata):
+def matchesIssuedCheck(check, requestKey, generation, baseSHA, baseRef):
     output = check.get("output") or {}
-    if (output.get("summary") or "").splitlines()[:1] == [invalidationSummary]:
+    if (output.get("summary") or "").splitlines()[:1] in ([invalidationSummary], [supersededSummary]):
         return False
     lines = (output.get("text") or "").splitlines()
-    marker = f"x86-e2e-gate request={executorRequestKey(metadata)} approval={metadata['approvalGeneration']}"
-    target = f"x86-e2e-target base={metadata['baseSHA']} ref={metadata['baseRef']}"
+    marker = f"x86-e2e-gate request={requestKey} approval={generation}"
+    target = f"x86-e2e-target base={baseSHA} ref={baseRef}"
     return ([line for line in lines if line.startswith("x86-e2e-gate")] == [marker]
             and [line for line in lines if line.startswith("x86-e2e-target ")] == [target])
+
+
+def matchesExecutorCheck(check, metadata):
+    return matchesIssuedCheck(check, executorRequestKey(metadata), metadata["approvalGeneration"],
+                              metadata["baseSHA"], metadata["baseRef"])
 
 
 def latestExecutorRun(

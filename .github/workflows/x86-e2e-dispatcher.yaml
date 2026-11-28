@@ -115,7 +115,8 @@ jobs:
           [[ "$PUSHED_REF" == refs/heads/* && "$PUSHED_SHA" =~ ^[0-9a-f]{40}$ ]]
           pushedRef=${PUSHED_REF#refs/heads/}
           python3 hack/e2e_control.py base-ref --ref="$pushedRef" > /dev/null
-          bash hack/verify-e2e-receiver-v1.sh
+          proof=$(bash hack/verify-e2e-receiver-v1.sh)
+          [[ "$proof" == x86-e2e-invalidate-v1:push-target ]]
           gh api --paginate \
             "repos/$GITHUB_REPOSITORY/pulls?state=open&base=$pushedRef&per_page=100" \
             --jq '.[] | [.number, .head.sha] | @tsv' > open-pulls.tsv

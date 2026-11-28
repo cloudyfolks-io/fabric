@@ -82,10 +82,13 @@ class GateReplayTest(unittest.TestCase):
                     "status": "completed", "conclusion": "success", "run_attempt": 1}
 
         runs = [run(10)]
+        siblings = []
 
         def api(path, *args, **kwargs):
             if path.startswith("commits/"):
-                return [{"check_runs": [check]}]
+                return [{"check_runs": [check, *siblings]}]
+            if path == "git/ref/heads/main":
+                return {"ref": "refs/heads/main", "object": {"type": "commit", "sha": base}}
             if path == "pulls/7":
                 return pr
             if path.startswith("issues/7/timeline"):
@@ -94,11 +97,11 @@ class GateReplayTest(unittest.TestCase):
                 return timeline
             if path == "issues/7/comments":
                 return comment(100 + len(timeline[0]), kwargs["body"]["body"], "2025-01-03T00:00:00Z", bot)
-            self.assertEqual(path, "check-runs/101")
-            check.update(kwargs["body"])
+            self.assertEqual(args, ("--method", "PATCH", "--input", "-"))
+            next(item for item in [check, *siblings] if path == f"check-runs/{item['id']}").update(kwargs["body"])
 
         def duplicate(request, recorded=False):
-            snapshot = history.TargetHistory(timeline, [check])
+            snapshot = history.TargetHistory(timeline, [check, *siblings])
             generations = [g for g in snapshot.command_dates if snapshot.is_fresh(g)]
             return control.duplicateExecutor(runs, request, snapshot.comment_pages(), generations,
                                              currentCheck=check, recorded=recorded)
@@ -206,6 +209,33 @@ esac
         self.assertEqual(ready(10), "false")
         self.assertEqual(ready(20), "true")
         self.assertIsNone(duplicate(fresh, recorded=True))
+        # Both commands postdate the previous cutoff. Only the newer check owns this request.
+        earlier = authorize(19, "2025-01-03T00:00:00.500Z")
+        self.assertEqual(earlier["requestKey"], key)
+        # An old completion delivered before its sibling downgrade is visible cannot claim the new ID.
+        mutate("completed", 19, stale=True)
+        siblings.append(dict(check, id=99, output=dict(check["output"],
+                             text=f"x86-e2e-gate request={key} approval=19\n{target}")))
+        with patch.dict(os.environ, VERIFY_PUSH_TARGET="true", PUSHED_REF="main", PUSHED_SHA=base), \
+                patch.object(invalidate, "api", api):
+            invalidate.invalidate("7", head)
+        self.assertEqual(siblings[0]["output"]["summary"], f"{control.supersededSummary}\n{control.supersededPrefix}19")
+        snapshot = history.TargetHistory(timeline, [check, *siblings])
+        self.assertFalse(snapshot.is_fresh(19))
+        self.assertTrue(snapshot.is_fresh(20))
+        self.assertEqual(snapshot.invalidation, history.TargetHistory(timeline, [check]).invalidation)
+        with patch.dict(check["output"], text=siblings[0]["output"]["text"]):
+            self.assertFalse(history.TargetHistory(timeline, [check, *siblings]).is_fresh(19))
+        for status, conclusion in [("in_progress", None), ("completed", "success")]:
+            runs.insert(0, dict(run(19), status=status, conclusion=conclusion))
+            self.assertIsNone(duplicate(fresh, recorded=True))
+            mutate("reservation", 19, stale=True)
+            mutate("completed", 19, stale=True)
+            runs.insert(0, dict(run(20), status=status, conclusion=conclusion))
+            self.assertEqual(duplicate(fresh, recorded=True), runs[0])
+            if status == "in_progress":
+                mutate("reservation", 20, unchanged=True)
+            del runs[:2]
         mutate("completed", 10, stale=True)
         self.assertIsNone(recovery.pendingExecutor(runs, "org/repo", api))
         runs.insert(0, run(20))
