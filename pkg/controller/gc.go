@@ -584,119 +584,45 @@ func (c *Controller) gcLoadBalancer() error {
 		return err
 	}
 
-	var (
-		tcpVips         = strset.NewWithSize(len(svcs) * 2)
-		udpVips         = strset.NewWithSize(len(svcs) * 2)
-		sctpVips        = strset.NewWithSize(len(svcs) * 2)
-		tcpSessionVips  = strset.NewWithSize(len(svcs) * 2)
-		udpSessionVips  = strset.NewWithSize(len(svcs) * 2)
-		sctpSessionVips = strset.NewWithSize(len(svcs) * 2)
-	)
-
-	for _, svc := range svcs {
-		for _, ip := range getVipIps(svc) {
-			for _, port := range svc.Spec.Ports {
-				vip := util.JoinHostPort(ip, port.Port)
-				switch port.Protocol {
-				case corev1.ProtocolTCP:
-					if svc.Spec.SessionAffinity == corev1.ServiceAffinityClientIP {
-						tcpSessionVips.Add(vip)
-					} else {
-						tcpVips.Add(vip)
-					}
-				case corev1.ProtocolUDP:
-					if svc.Spec.SessionAffinity == corev1.ServiceAffinityClientIP {
-						udpSessionVips.Add(vip)
-					} else {
-						udpVips.Add(vip)
-					}
-				case corev1.ProtocolSCTP:
-					if svc.Spec.SessionAffinity == corev1.ServiceAffinityClientIP {
-						sctpSessionVips.Add(vip)
-					} else {
-						sctpVips.Add(vip)
-					}
-				}
-			}
-		}
-	}
-
+	active := activeServiceVIPs(svcs)
 	vpcs, err := c.vpcsLister.List(labels.Everything())
 	if err != nil {
 		klog.Errorf("failed to list vpc, %v", err)
 		return err
 	}
 
-	var (
-		removeVip         func(lbName string, svcVips *strset.Set) error
-		ignoreHealthCheck = true
-	)
-
-	removeVip = func(lbName string, svcVips *strset.Set) error {
-		if lbName == "" {
-			return nil
-		}
-
-		var (
-			lb  *ovnnb.LoadBalancer
-			err error
-		)
-
-		if lb, err = c.OVNNbClient.GetLoadBalancer(lbName, true); err != nil {
-			klog.Errorf("get LB %s: %v", lbName, err)
-			return err
-		}
-
-		if lb == nil {
-			klog.Infof("load balancer %q already deleted", lbName)
-			return nil
-		}
-
-		for vip := range lb.Vips {
-			if !svcVips.Has(vip) {
-				if err = c.OVNNbClient.LoadBalancerDeleteVip(lbName, vip, ignoreHealthCheck); err != nil {
-					klog.Errorf("failed to delete vip %s from LB %s: %v", vip, lbName, err)
-					return err
-				}
-			}
-		}
-		return nil
-	}
-
 	for _, vpc := range vpcs {
-		var (
-			tcpLb, udpLb, sctpLb             = vpc.Status.TCPLoadBalancer, vpc.Status.UDPLoadBalancer, vpc.Status.SctpLoadBalancer
-			tcpSessLb, udpSessLb, sctpSessLb = vpc.Status.TCPSessionLoadBalancer, vpc.Status.UDPSessionLoadBalancer, vpc.Status.SctpSessionLoadBalancer
-		)
-
-		vpcLbs.Add(tcpLb, udpLb, sctpLb, tcpSessLb, udpSessLb, sctpSessLb)
 		expected := c.GenVpcLoadBalancer(vpc.Name)
 		vpcLbs.Add(expected.TCPLoadBalancer, expected.TCPSessLoadBalancer,
 			expected.UDPLoadBalancer, expected.UDPSessLoadBalancer,
 			expected.SctpLoadBalancer, expected.SctpSessLoadBalancer)
-		if err = removeVip(tcpLb, tcpVips); err != nil {
-			klog.Error(err)
-			return err
-		}
-		if err = removeVip(tcpSessLb, tcpSessionVips); err != nil {
-			klog.Error(err)
-			return err
-		}
-		if err = removeVip(udpLb, udpVips); err != nil {
-			klog.Error(err)
-			return err
-		}
-		if err = removeVip(udpSessLb, udpSessionVips); err != nil {
-			klog.Error(err)
-			return err
-		}
-		if err = removeVip(sctpLb, sctpVips); err != nil {
-			klog.Error(err)
-			return err
-		}
-		if err = removeVip(sctpSessLb, sctpSessionVips); err != nil {
-			klog.Error(err)
-			return err
+		recorded := recordedServiceLoadBalancers(vpc)
+		for _, protocol := range []corev1.Protocol{corev1.ProtocolTCP, corev1.ProtocolUDP, corev1.ProtocolSCTP} {
+			fallback := serviceLoadBalancers(*expected, protocol)
+			for index, name := range serviceLoadBalancers(recorded, protocol) {
+				if name == "" {
+					name = fallback[index]
+				}
+				if name == "" {
+					continue
+				}
+				vpcLbs.Add(name)
+				lb, err := c.OVNNbClient.GetLoadBalancer(name, true)
+				if err != nil {
+					return fmt.Errorf("get load balancer %s: %w", name, err)
+				}
+				if lb == nil {
+					continue
+				}
+				for socket := range lb.Vips {
+					if serviceVIPActive(active, serviceVIP{vpc: vpc.Name, protocol: protocol, session: index == 1, socket: socket}) {
+						continue
+					}
+					if err := c.OVNNbClient.LoadBalancerDeleteVip(name, socket, true); err != nil {
+						return fmt.Errorf("delete VIP %s from load balancer %s: %w", socket, name, err)
+					}
+				}
+			}
 		}
 	}
 

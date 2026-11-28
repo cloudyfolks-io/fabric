@@ -107,7 +107,7 @@ type Controller struct {
 	loadBalancerLister      fabriclister.LoadBalancerLister
 	loadBalancerSynced      cache.InformerSynced
 	addLoadBalancerQueue    workqueue.TypedRateLimitingInterface[string]
-	delLoadBalancerQueue    workqueue.TypedRateLimitingInterface[string]
+	delLoadBalancerQueue    workqueue.TypedRateLimitingInterface[loadBalancerDeletion]
 	addRouterLBRuleQueue    workqueue.TypedRateLimitingInterface[string]
 	updateRouterLBRuleQueue workqueue.TypedRateLimitingInterface[*RouterLBRuleInfo]
 	delRouterLBRuleQueue    workqueue.TypedRateLimitingInterface[*RouterLBRuleInfo]
@@ -209,7 +209,6 @@ type Controller struct {
 	endpointSlicesSynced          cache.InformerSynced
 	epsIndexer                    cache.Indexer
 	addOrUpdateEndpointSliceQueue workqueue.TypedRateLimitingInterface[string]
-	epKeyMutex                    keymutex.KeyMutex
 	serviceL2StatusMutex          sync.RWMutex
 	serviceL2StatusIndexer        cache.Indexer
 	serviceL2StatusSynced         cache.InformerSynced
@@ -478,7 +477,6 @@ func Run(ctx context.Context, config *Configuration) {
 		endpointSlicesLister:          endpointSliceInformer.Lister(),
 		endpointSlicesSynced:          endpointSliceInformer.Informer().HasSynced,
 		addOrUpdateEndpointSliceQueue: newTypedRateLimitingQueue[string]("UpdateEndpointSlice", nil),
-		epKeyMutex:                    keymutex.NewHashed(numKeyLocks),
 
 		deploymentsLister: deploymentInformer.Lister(),
 		deploymentsSynced: deploymentInformer.Informer().HasSynced,
@@ -565,7 +563,7 @@ func Run(ctx context.Context, config *Configuration) {
 		controller.loadBalancerLister = loadBalancerInformer.Lister()
 		controller.loadBalancerSynced = loadBalancerInformer.Informer().HasSynced
 		controller.addLoadBalancerQueue = newTypedRateLimitingQueue("AddLoadBalancer", custCrdRateLimiter)
-		controller.delLoadBalancerQueue = newTypedRateLimitingQueue[string]("DeleteLoadBalancer", nil)
+		controller.delLoadBalancerQueue = newTypedRateLimitingQueue[loadBalancerDeletion]("DeleteLoadBalancer", nil)
 		controller.addRouterLBRuleQueue = newTypedRateLimitingQueue("AddRouterLBRule", custCrdRateLimiter)
 		controller.delRouterLBRuleQueue = newTypedRateLimitingQueue(
 			"DeleteRouterLBRule",

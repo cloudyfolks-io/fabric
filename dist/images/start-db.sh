@@ -239,18 +239,27 @@ function is_clustered {
 }
 
 function set_nb_version_compatibility() {
-    if [ -n "$OVN_VERSION_COMPATIBILITY" ]; then
-        if ! ovn-nbctl --db=$(gen_conn_str 6641) $SSL_OPTIONS get NB_Global . options | grep -q version_compatibility=; then
-            echo "setting ovn NB_Global option version_compatibility to ${OVN_VERSION_COMPATIBILITY}"
-            ovn-nbctl --db=$(gen_conn_str 6641) $SSL_OPTIONS set NB_Global . options:version_compatibility="${OVN_VERSION_COMPATIBILITY}"
-            return
-        fi
-        value=$(ovn-nbctl --db=$(gen_conn_str 6641) $SSL_OPTIONS get NB_Global . options:version_compatibility | sed -e 's/^"//' -e 's/"$//')
-        echo "ovn nb global option version_compatibility is set to $value"
-        if [ "$value" != "_$OVN_VERSION_COMPATIBILITY" ]; then
-            ovn-nbctl --db=$(gen_conn_str 6641) $SSL_OPTIONS set NB_Global . options:version_compatibility=${OVN_VERSION_COMPATIBILITY}
+    if [[ -z "$OVN_VERSION_COMPATIBILITY" ]]; then
+        return 0
+    fi
+
+    local -a nbctl_args=() tls_args=()
+    if [[ -n "$NODE_IPS" ]]; then
+        read -r -a tls_args <<< "$SSL_OPTIONS"
+        nbctl_args=("--db=$(gen_conn_str "$NB_PORT")" "${tls_args[@]}")
+    fi
+
+    local options value
+    options=$(ovn-nbctl "${nbctl_args[@]}" get NB_Global . options) || return
+    if [[ "$options" == *version_compatibility=* ]]; then
+        value=$(ovn-nbctl "${nbctl_args[@]}" get NB_Global . options:version_compatibility | sed -e 's/^"//' -e 's/"$//') || return
+        if [[ "$value" == "$OVN_VERSION_COMPATIBILITY" || "$value" == "_$OVN_VERSION_COMPATIBILITY" ]]; then
+            return 0
         fi
     fi
+
+    echo "setting ovn NB_Global option version_compatibility to $OVN_VERSION_COMPATIBILITY"
+    ovn-nbctl "${nbctl_args[@]}" set NB_Global . "options:version_compatibility=$OVN_VERSION_COMPATIBILITY"
 }
 
 if [[ -n "${NODE_IPS:-}" ]]; then
@@ -507,6 +516,7 @@ if [[ "$ENABLE_SSL" == "false" ]]; then
         ovn-nbctl --no-leader-only set Connection . inactivity_probe=${PROBE_INTERVAL}
         ovn-nbctl --no-leader-only set NB_Global . options:northd_probe_interval=${OVN_NORTHD_PROBE_INTERVAL}
         ovn-nbctl --no-leader-only set NB_Global . options:use_logical_dp_groups=true
+        set_nb_version_compatibility
 
         ovn-sbctl --no-leader-only set-connection ptcp:"${SB_PORT}":["${DB_ADDR}"]
         ovn-sbctl --no-leader-only set Connection . inactivity_probe=${PROBE_INTERVAL}
@@ -635,6 +645,7 @@ else
         ovn-nbctl --no-leader-only $SSL_OPTIONS set-connection pssl:"${NB_PORT}":["${DB_ADDR}"]
         ovn-nbctl --no-leader-only $SSL_OPTIONS set Connection . inactivity_probe=${PROBE_INTERVAL}
         ovn-nbctl --no-leader-only $SSL_OPTIONS set NB_Global . options:use_logical_dp_groups=true
+        set_nb_version_compatibility
 
         ovn-sbctl --no-leader-only $SSL_OPTIONS set-connection pssl:"${SB_PORT}":["${DB_ADDR}"]
         ovn-sbctl --no-leader-only $SSL_OPTIONS set Connection . inactivity_probe=${PROBE_INTERVAL}
@@ -679,6 +690,7 @@ else
                 start_sb_ovsdb -- \
                 --remote=db:Local_Config,Config,connections \
                 /etc/ovn/ovnsb_local_config.db
+            set_nb_version_compatibility
             /usr/share/ovn/scripts/ovn-ctl $ovn_ctl_args \
                 --ovn-manage-ovsdb=no --ovn-northd-n-threads="${OVN_NORTHD_N_THREADS}" start_northd
             ovn-nbctl --no-leader-only $SSL_OPTIONS set NB_Global . options:northd_probe_interval=${OVN_NORTHD_PROBE_INTERVAL}

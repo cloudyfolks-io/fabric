@@ -190,6 +190,9 @@ func setupHandleDelSLRTest(t *testing.T, vpcName, subnetName, slrName, namespace
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      svcName,
 			Namespace: namespace,
+			OwnerReferences: []metav1.OwnerReference{
+				generatedFrontendOwner(&fabricv1.SwitchLBRule{ObjectMeta: metav1.ObjectMeta{Name: slrName}}, "SwitchLBRule"),
+			},
 			Annotations: map[string]string{
 				util.LogicalSwitchAnnotation: subnetName,
 				util.VpcAnnotation:           vpcName,

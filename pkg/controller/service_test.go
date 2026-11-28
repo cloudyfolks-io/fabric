@@ -388,6 +388,24 @@ func Test_enqueueUpdateServiceSkipsIrrelevantUpdates(t *testing.T) {
 	}
 }
 
+func TestSwitchRuleServiceHealthCheckChangeQueuesEndpoints(t *testing.T) {
+	controller := &Controller{
+		config:                        &Configuration{EnableLb: true},
+		addOrUpdateEndpointSliceQueue: newTypedRateLimitingQueue[string]("EndpointSlice", nil),
+	}
+	t.Cleanup(controller.addOrUpdateEndpointSliceQueue.ShutDown)
+	old := &v1.Service{ObjectMeta: metav1.ObjectMeta{
+		Name: "slr-test", Namespace: "test", ResourceVersion: "1",
+		Annotations: map[string]string{util.SwitchLBRuleVipsAnnotation: "10.0.0.8"},
+	}}
+	updated := old.DeepCopy()
+	updated.ResourceVersion = "2"
+	updated.Annotations[util.ServiceHealthCheck] = "false"
+
+	controller.enqueueUpdateService(old, updated)
+	require.Equal(t, 1, controller.addOrUpdateEndpointSliceQueue.Len())
+}
+
 func Test_enqueueUpdateEndpointSliceSkipsContentlessUpdates(t *testing.T) {
 	t.Parallel()
 

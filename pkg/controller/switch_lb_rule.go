@@ -7,8 +7,10 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
@@ -21,6 +23,9 @@ import (
 
 type SwitchLBRuleInfo struct {
 	Name       string
+	UID        types.UID
+	Service    string
+	Address    string
 	Namespace  string
 	Subnet     string
 	VPC        string
@@ -45,6 +50,9 @@ func NewSwitchLBRuleInfo(slr *fabricv1.SwitchLBRule) *SwitchLBRuleInfo {
 
 	return &SwitchLBRuleInfo{
 		Name:      slr.Name,
+		UID:       slr.UID,
+		Service:   slr.Status.Service,
+		Address:   slr.Spec.Vip,
 		Namespace: namespace,
 		Subnet:    slr.Annotations[util.LogicalSwitchAnnotation],
 		VPC:       slr.Annotations[util.LogicalRouterAnnotation],
@@ -111,7 +119,7 @@ func (c *Controller) handleAddOrUpdateSwitchLBRule(key string) error {
 		err                              error
 	)
 
-	if slr, err = c.switchLBRuleLister.Get(key); err != nil {
+	if slr, err = c.config.FabricClient.FabricV1().SwitchLBRules().Get(context.Background(), key, metav1.GetOptions{}); err != nil {
 		if k8serrors.IsNotFound(err) {
 			return nil
 		}
@@ -119,16 +127,21 @@ func (c *Controller) handleAddOrUpdateSwitchLBRule(key string) error {
 		return err
 	}
 
+	if slr.DeletionTimestamp != nil {
+		return nil
+	}
 	if slr.Spec.Vip == "" {
 		klog.Warningf("SwitchLBRule %s has empty Vip, skipping", key)
 		return nil
 	}
 
+	info := NewSwitchLBRuleInfo(slr)
+	slr.Spec.Namespace = info.Namespace
 	svcName = generateSvcName(slr.Name)
-	if oldSvc, err = c.servicesLister.Services(slr.Spec.Namespace).Get(svcName); err != nil {
+	if oldSvc, err = c.config.KubeClient.CoreV1().Services(slr.Spec.Namespace).Get(context.Background(), svcName, metav1.GetOptions{}); err != nil {
 		if k8serrors.IsNotFound(err) {
 			needToCreateSvc = true
-			needToCreateEps = true
+			oldSvc = nil
 		} else {
 			klog.Errorf("failed to create service '%s', err: %v", svcName, err)
 			return err
@@ -138,10 +151,18 @@ func (c *Controller) handleAddOrUpdateSwitchLBRule(key string) error {
 	if oldEps, err = c.config.KubeClient.CoreV1().Endpoints(slr.Spec.Namespace).Get(context.Background(), svcName, metav1.GetOptions{}); err != nil {
 		if k8serrors.IsNotFound(err) {
 			needToCreateEps = true
+			oldEps = nil
 		} else {
 			klog.Errorf("failed to get service endpoints '%s', err: %v", svcName, err)
 			return err
 		}
+	}
+
+	if oldSvc != nil && !switchRuleOwnsService(info, oldSvc) {
+		return fmt.Errorf("the Service %s/%s belongs to a different owner", slr.Spec.Namespace, svcName)
+	}
+	if len(slr.Spec.Endpoints) > 0 && oldEps != nil && !switchRuleOwnsEndpoints(info, oldSvc, oldEps) {
+		return fmt.Errorf("the Endpoints %s/%s belong to a different owner", slr.Spec.Namespace, svcName)
 	}
 
 	var (
@@ -157,25 +178,27 @@ func (c *Controller) handleAddOrUpdateSwitchLBRule(key string) error {
 				klog.Error(err)
 				return err
 			}
-		} else {
+		} else if !apiequality.Semantic.DeepEqual(oldEps, eps) {
 			if _, err = c.config.KubeClient.CoreV1().Endpoints(slr.Spec.Namespace).Update(context.Background(), eps, metav1.UpdateOptions{}); err != nil {
 				err = fmt.Errorf("failed to update endpoints '%s', err: %w", eps, err)
 				klog.Error(err)
 				return err
 			}
 		}
-
-		slr.Spec.Selector = nil
 	}
 
-	svc = generateHeadlessService(slr, oldSvc)
+	frontend := slr.DeepCopy()
+	if len(frontend.Spec.Endpoints) > 0 {
+		frontend.Spec.Selector = nil
+	}
+	svc = generateHeadlessService(frontend, oldSvc)
 	if needToCreateSvc {
 		if _, err = c.config.KubeClient.CoreV1().Services(slr.Spec.Namespace).Create(context.Background(), svc, metav1.CreateOptions{}); err != nil {
 			err = fmt.Errorf("failed to create service '%s', err: %w", svc, err)
 			klog.Error(err)
 			return err
 		}
-	} else {
+	} else if !apiequality.Semantic.DeepEqual(oldSvc, svc) {
 		if _, err = c.config.KubeClient.CoreV1().Services(slr.Spec.Namespace).Update(context.Background(), svc, metav1.UpdateOptions{}); err != nil {
 			err = fmt.Errorf("failed to update service '%s', err: %w", svc, err)
 			klog.Error(err)
@@ -198,6 +221,9 @@ func (c *Controller) handleAddOrUpdateSwitchLBRule(key string) error {
 	}
 	newSlr.Status.Ports = strings.TrimPrefix(formatPorts, ",")
 
+	if apiequality.Semantic.DeepEqual(slr.Status, newSlr.Status) {
+		return nil
+	}
 	if _, err = c.config.FabricClient.FabricV1().SwitchLBRules().UpdateStatus(context.Background(), newSlr, metav1.UpdateOptions{}); err != nil {
 		err = fmt.Errorf("failed to update switch lb rule status, %w", err)
 		klog.Error(err)
@@ -209,22 +235,37 @@ func (c *Controller) handleAddOrUpdateSwitchLBRule(key string) error {
 func (c *Controller) handleDelSwitchLBRule(info *SwitchLBRuleInfo) error {
 	klog.V(3).Infof("handleDelSwitchLBRule %s", info.Name)
 
+	current, err := c.config.FabricClient.FabricV1().SwitchLBRules().Get(context.Background(), info.Name, metav1.GetOptions{})
+	if err != nil && !k8serrors.IsNotFound(err) {
+		return err
+	}
+	if err == nil && current.UID != info.UID {
+		return nil
+	}
+
 	var (
-		name  string
 		lbhcs []ovnnb.LoadBalancerHealthCheck
 		vips  map[string]struct{}
-		err   error
 	)
 
-	name = generateSvcName(info.Name)
+	name := generateSvcName(info.Name)
 
 	subnetForVip := ""
 	vpcForSlr := ""
-	if svc, e := c.servicesLister.Services(info.Namespace).Get(name); e == nil {
+	services := c.config.KubeClient.CoreV1().Services(info.Namespace)
+	svc, err := services.Get(context.Background(), name, metav1.GetOptions{})
+	if err != nil && !k8serrors.IsNotFound(err) {
+		return err
+	}
+	if k8serrors.IsNotFound(err) {
+		svc = nil
+	} else {
+		if !switchRuleOwnsService(info, svc) || (info.Address != "" && svc.Annotations[util.SwitchLBRuleVipsAnnotation] != info.Address) {
+			return nil
+		}
 		subnetForVip = svc.Annotations[util.LogicalSwitchAnnotation]
-
-		if vpcForSlr = svc.Annotations[util.VpcAnnotation]; vpcForSlr == "" {
-			vpcForSlr = svc.Annotations[util.LogicalRouterAnnotation]
+		if vpcForSlr = svc.Annotations[util.LogicalRouterAnnotation]; vpcForSlr == "" {
+			vpcForSlr = svc.Annotations[util.VpcAnnotation]
 		}
 	}
 
@@ -234,9 +275,18 @@ func (c *Controller) handleDelSwitchLBRule(info *SwitchLBRuleInfo) error {
 	if vpcForSlr == "" {
 		vpcForSlr = info.VPC
 	}
-	if err = c.config.KubeClient.CoreV1().Services(info.Namespace).Delete(context.Background(), name, metav1.DeleteOptions{}); err != nil {
-		if !k8serrors.IsNotFound(err) {
-			klog.Errorf("failed to delete service %s, err: %v", name, err)
+	if svc != nil {
+		if err = services.Delete(context.Background(), name, generatedFrontendDeleteOptions(svc)); err != nil && !k8serrors.IsNotFound(err) {
+			return err
+		}
+	}
+	endpoints := c.config.KubeClient.CoreV1().Endpoints(info.Namespace)
+	eps, err := endpoints.Get(context.Background(), name, metav1.GetOptions{})
+	if err != nil && !k8serrors.IsNotFound(err) {
+		return err
+	}
+	if err == nil && switchRuleOwnsEndpoints(info, svc, eps) {
+		if err = endpoints.Delete(context.Background(), name, generatedFrontendDeleteOptions(eps)); err != nil && !k8serrors.IsNotFound(err) {
 			return err
 		}
 	}
@@ -253,7 +303,7 @@ func (c *Controller) handleDelSwitchLBRule(info *SwitchLBRuleInfo) error {
 			)
 			vpcLBNames.Delete("")
 		case k8serrors.IsNotFound(e):
-			klog.Warningf("VPC %s not found for SLR %s, falling back to unscoped deletion", vpcForSlr, info.Name)
+			return nil
 		default:
 			klog.Errorf("failed to get VPC %s for SLR %s: %v, requeueing", vpcForSlr, info.Name, e)
 			return e
@@ -375,6 +425,34 @@ func (c *Controller) handleUpdateSwitchLBRule(info *SwitchLBRuleInfo) error {
 	return nil
 }
 
+func switchRuleControls(info *SwitchLBRuleInfo, child metav1.Object) bool {
+	owner := metav1.GetControllerOf(child)
+	return owner != nil && owner.UID == info.UID && owner.Name == info.Name &&
+		owner.APIVersion == fabricv1.SchemeGroupVersion.String() && owner.Kind == "SwitchLBRule"
+}
+
+func switchRuleOwnsService(info *SwitchLBRuleInfo, svc *corev1.Service) bool {
+	if len(svc.OwnerReferences) > 0 {
+		return switchRuleControls(info, svc)
+	}
+	return info.Service == svc.Namespace+"/"+svc.Name && info.Address != "" &&
+		svc.Spec.ClusterIP == corev1.ClusterIPNone && svc.Annotations[util.SwitchLBRuleVipsAnnotation] == info.Address
+}
+
+func switchRuleOwnsEndpoints(info *SwitchLBRuleInfo, svc *corev1.Service, endpoints *corev1.Endpoints) bool {
+	if switchRuleControls(info, endpoints) {
+		return true
+	}
+	if svc == nil || !switchRuleOwnsService(info, svc) || svc.Name != endpoints.Name || svc.Namespace != endpoints.Namespace {
+		return false
+	}
+	if len(endpoints.OwnerReferences) > 0 {
+		owner := metav1.GetControllerOf(endpoints)
+		return owner != nil && owner.APIVersion == "v1" && owner.Kind == "Service" && owner.Name == svc.Name && owner.UID == svc.UID
+	}
+	return info.Service == endpoints.Namespace+"/"+endpoints.Name && len(svc.Spec.Selector) == 0
+}
+
 func generateHeadlessService(slr *fabricv1.SwitchLBRule, oldSvc *corev1.Service) *corev1.Service {
 	var (
 		name      string
@@ -440,6 +518,9 @@ func generateHeadlessService(slr *fabricv1.SwitchLBRule, oldSvc *corev1.Service)
 		}
 	}
 
+	if slr.UID != "" {
+		newSvc.OwnerReferences = []metav1.OwnerReference{generatedFrontendOwner(slr, "SwitchLBRule")}
+	}
 	setUserDefinedNetwork(newSvc, slr)
 
 	setHealthCheckAnnotation(newSvc, slr)
@@ -466,7 +547,7 @@ func setUserDefinedNetwork(service *corev1.Service, slr *fabricv1.SwitchLBRule) 
 }
 
 func setHealthCheckAnnotation(service *corev1.Service, slr *fabricv1.SwitchLBRule) {
-	if service == nil || slr == nil || slr.Annotations == nil {
+	if service == nil || slr == nil {
 		return
 	}
 
@@ -476,6 +557,8 @@ func setHealthCheckAnnotation(service *corev1.Service, slr *fabricv1.SwitchLBRul
 
 	if healthcheck := slr.Annotations[util.ServiceHealthCheck]; healthcheck != "" {
 		service.Annotations[util.ServiceHealthCheck] = healthcheck
+	} else {
+		delete(service.Annotations, util.ServiceHealthCheck)
 	}
 }
 
@@ -532,6 +615,9 @@ func generateEndpoints(slr *fabricv1.SwitchLBRule, oldEps *corev1.Endpoints) *co
 			},
 			Subsets: subsets,
 		}
+	}
+	if slr.UID != "" {
+		newEps.OwnerReferences = []metav1.OwnerReference{generatedFrontendOwner(slr, "SwitchLBRule")}
 	}
 	return newEps
 }

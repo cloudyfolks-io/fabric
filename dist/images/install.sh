@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REGISTRY="ghcr.io/cloudyfolks-io"
-VERSION="v1.2.6"
+VERSION="v1.2.7"
 
 DEL_NON_HOST_NET_POD=${DEL_NON_HOST_NET_POD:-true}
 IPV6=${IPV6:-false}
@@ -2363,6 +2363,9 @@ spec:
               ingressMd5:
                 description: MD5 hash of ingress rules
                 type: string
+              observedGeneration:
+                format: int64
+                type: integer
               portGroup:
                 description: OVN port group name
                 type: string
