@@ -66,7 +66,6 @@ class FastPathTest(unittest.TestCase):
 
     def test_partial_rerun_uses_retained_producer_outputs(self):
         import os
-        import re
         import textwrap
         workflow = (ROOT / ".github/workflows/build-x86-image.yaml").read_text()
         producer = workflow.split("  build-e2e-binaries:\n")[1].split("\n  netpol-path-filter:")[0]
@@ -74,11 +73,12 @@ class FastPathTest(unittest.TestCase):
         action = (ROOT / ".github/actions/e2e-binaries/action.yml").read_text()
         guard, download = action.split("    - uses: actions/download-artifact@v8\n")
         self.assertIn("ARTIFACT_NAME: ${{ inputs.artifact-name }}", guard)
-        validate = re.search(r"^      run: '(.+)'$", guard, re.M).group(1)
-        self.assertIn("        name: ${{ inputs.artifact-name }}\n", download)
+        resolve = textwrap.dedent(guard.split("      run: |\n")[1])
+        self.assertIn("        name: ${{ steps.artifact.outputs.name }}\n", download)
 
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp) / "outputs"
+            resolved = Path(tmp) / "resolved"
             env = dict(os.environ, GITHUB_RUN_ID="315", GITHUB_RUN_ATTEMPT="1", GITHUB_OUTPUT=str(output))
             subprocess.run(["bash", "-ec", script], env=env, check=True)
             names = dict(line.split("=", 1) for line in output.read_text().splitlines())
@@ -94,15 +94,129 @@ class FastPathTest(unittest.TestCase):
                     self.assertIn(f"name: {step_value}\n          path: {path}\n", producer)
                     self.assertIn("artifact-name: ${{ needs.build-e2e-binaries.outputs." + job_output + " }}", workflow)
                     self.assertEqual(names[kind], expected)
-                    subprocess.run(["bash", "-ec", validate], env=dict(env, ARTIFACT_NAME=names[kind]), check=True)
-            for missing in ("", "  "):
-                result = subprocess.run(["bash", "-ec", validate], env=dict(env, ARTIFACT_NAME=missing))
-                self.assertNotEqual(result.returncode, 0)
+                    subprocess.run(["bash", "-ec", resolve], check=True,
+                                   env=dict(env, ARTIFACT_NAME=names[kind], GITHUB_OUTPUT=str(resolved)))
+                    self.assertEqual(resolved.read_text(), f"name={expected}\n")
+                    resolved.unlink()
             env["GITHUB_OUTPUT"] = str(Path(tmp) / "rebuilt")
             subprocess.run(["bash", "-ec", script], env=env, check=True)
             self.assertEqual(Path(env["GITHUB_OUTPUT"]).read_text().splitlines(), [
                 "base=e2e-binaries-315-2", "hosted=e2e-hosted-binaries-315-2",
             ])
+
+    def test_legacy_and_modern_artifact_name_binding(self):
+        import json
+        import os
+        import re
+        import textwrap
+        action_path = ".github/actions/e2e-binaries/action.yml"
+        workflow_path = ".github/workflows/build-x86-image.yaml"
+        action = (ROOT / action_path).read_text()
+        resolver = textwrap.dedent(action.split("      run: |\n", 1)[1].split("    - uses:", 1)[0])
+        legacy = "91f3cc14492e781fb082f2f5c1b871f49952ea69"
+        strict_revision = "0191cb54cfb0bc27e36521a5778f50c77511ede2"
+        legacy_caller = """      - &restore-e2e-binaries
+        uses: ./.github/actions/e2e-binaries
+        with:
+          source-sha: ${{ needs.build-e2e-binaries.outputs.sourceSHA }}
+          directory: ${{ env.E2E_DIR || '.' }}
+"""
+        strict_action = """  artifact-name:
+    required: true
+    description: Same-run artifact name exported by the producer
+runs:
+  using: composite
+  steps:
+    - name: Require a producer artifact name before download
+      shell: bash
+      env:
+        ARTIFACT_NAME: ${{ inputs.artifact-name }}
+      run: '[[ "$ARTIFACT_NAME" =~ [^[:space:]] ]]'
+"""
+        # Candidate-control can use a shallow checkout without either pinned object.
+        for rev, path, fixture in (
+            (legacy, workflow_path, legacy_caller), (strict_revision, action_path, strict_action),
+        ):
+            shown = subprocess.run(["git", "show", f"{rev}:{path}"], cwd=ROOT, capture_output=True,
+                                   text=True, env=dict(os.environ, GIT_ALLOW_PROTOCOL="", GIT_NO_LAZY_FETCH="1"))
+            if shown.returncode == 0:
+                self.assertIn(fixture, shown.stdout)
+
+        workflow = (ROOT / workflow_path).read_text()
+        modern_caller = workflow.split("      - &restore-e2e-binaries\n")[1].split("\n\n")[0]
+        source_dir = "test/e2e/source"
+        artifact = "e2e-binaries-46119093139-1"
+        expressions = {
+            "${{ needs.build-e2e-binaries.outputs.sourceSHA }}": legacy,
+            "${{ needs.build-e2e-binaries.outputs.artifactName }}": artifact,
+            "${{ env.E2E_DIR || '.' }}": source_dir,
+            "${{ env.E2E_DIR }}": source_dir,
+        }
+
+        def bind_action(metadata, caller, **overrides):
+            # Bind only the scalar inputs and env entries used by these action steps.
+            inputs, steps = metadata.split("\nruns:\n", 1)
+            defaults = {
+                name: json.loads(value) for name, value in re.findall(
+                    r"(?m)^  ([\w-]+):\n(?:^    .+\n)*?^    default: (.+)$", inputs,
+                )
+            }
+            supplied = {name: expressions[value] for name, value in re.findall(r"(?m)^ {10}([\w-]+): (.+)$", caller)}
+            supplied.update(overrides)
+            bound = {}
+            for name, value in re.findall(r"(?m)^ {8}([A-Z_]+): (.+)$", steps.split("      run:", 1)[0]):
+                ref = re.fullmatch(r"\$\{\{ inputs\.([\w-]+) \}\}", value)
+                bound[name] = supplied.get(ref[1], defaults.get(ref[1], "")) if ref else value
+            return bound
+
+        repo = "cloudyfolks-io/fabric"
+        env = dict(os.environ, GITHUB_WORKFLOW_SHA=legacy, GITHUB_REPOSITORY=repo, GITHUB_RUN_ID="46119093139",
+                   GITHUB_ACTOR="github-actions[bot]", GITHUB_EVENT_NAME="workflow_dispatch",
+                   GITHUB_WORKFLOW_REF=f"{repo}/.github/workflows/build-x86-image.yaml"
+                                       "@refs/heads/x86-e2e/pr-52-a-7235626292-d-46119070141")
+        strict_guard = re.search(r"(?m)^      run: '(.+)'$", strict_action)[1]
+        for caller, expected in ((legacy_caller, 1), (modern_caller, 0)):
+            result = subprocess.run(["bash", "-ec", strict_guard],
+                                    env=dict(env, **bind_action(strict_action, caller)))
+            self.assertEqual(result.returncode, expected)
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "output"
+            env.update(GITHUB_OUTPUT=str(output), GITHUB_RUN_ATTEMPT="1")
+            omitted = bind_action(action, legacy_caller)
+            explicit = bind_action(action, modern_caller)
+            for overrides, expected in (
+                ({}, artifact),
+                ({"GITHUB_RUN_ATTEMPT": "2"}, "e2e-binaries-46119093139-2"),
+                (dict(explicit, GITHUB_RUN_ATTEMPT="2", GITHUB_WORKFLOW_SHA=strict_revision), artifact),
+                ({"SOURCE_DIR": "."}, None),
+                ({"SOURCE_SHA": "advanced-main"}, None),
+                ({"GITHUB_WORKFLOW_SHA": strict_revision}, None),
+                (dict(bind_action(action, modern_caller, **{"artifact-name": ""}),
+                      GITHUB_WORKFLOW_SHA=strict_revision), None),
+                ({"GITHUB_WORKFLOW_REF": f"{repo}/.github/workflows/build-x86-image.yaml@refs/heads/main"}, None),
+                ({"GITHUB_ACTOR": "maintainer"}, None),
+                ({"GITHUB_EVENT_NAME": "schedule"}, None),
+            ):
+                with self.subTest(overrides=overrides):
+                    result = subprocess.run(["bash", "-ec", resolver], env=env | omitted | overrides)
+                    if expected is None:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertFalse(output.exists())
+                    else:
+                        self.assertEqual(result.returncode, 0)
+                        self.assertEqual(output.read_text(), f"name={expected}\n")
+                        output.unlink()
+            for invalid in (
+                "", " ", f"\ufeff{artifact}", f"{artifact} ", f"{artifact}\r", f"{artifact}\nname=other",
+                "e2e-binaries-589-1", "e2e-binaries-46119093139-0", "e2e-binaries-46119093139-01",
+                "e2e-binaries-46119093139-١", "e2e-other-binaries-46119093139-1",
+            ):
+                with self.subTest(invalid=invalid):
+                    result = subprocess.run(["bash", "-ec", resolver], env=env | bind_action(
+                        action, legacy_caller, **{"artifact-name": invalid},
+                    ))
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertFalse(output.exists())
 
     def test_hosted_artifact_matches_its_candidate_checkout(self):
         workflow = (ROOT / ".github/workflows/build-x86-image.yaml").read_text()
@@ -295,7 +409,7 @@ class FastPathTest(unittest.TestCase):
         self.assertIn("working-directory: ${{ env.E2E_DIR }}", step)
         build = textwrap.dedent(step.split("        run: |\n")[1])
         action = (ROOT / ".github/actions/e2e-binaries/action.yml").read_text()
-        verify = textwrap.dedent(action.split("      run: |\n")[1])
+        verify = textwrap.dedent(action.rsplit("      run: |\n", 1)[1])
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             subprocess.run(["git", "init", "-qb", "main"], cwd=root, check=True)
@@ -338,7 +452,7 @@ class FastPathTest(unittest.TestCase):
                           workflow, re.S).group(1)
         packager = textwrap.dedent(block)
         action = (ROOT / ".github/actions/e2e-binaries/action.yml").read_text()
-        verifier = textwrap.dedent(action.split("      run: |\n")[1])
+        verifier = textwrap.dedent(action.rsplit("      run: |\n", 1)[1])
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source, runner, tools = (root / name for name in ("source", "runner", "tools"))
@@ -396,7 +510,7 @@ target.chmod(0o755)
         if shutil.which("sha256sum") is None:
             self.skipTest("GNU sha256sum required")
         action = (ROOT / ".github/actions/e2e-binaries/action.yml").read_text()
-        verifier = textwrap.dedent(action.split("      run: |\n")[1])
+        verifier = textwrap.dedent(action.rsplit("      run: |\n", 1)[1])
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             shas, trees, archives = [], [], []
