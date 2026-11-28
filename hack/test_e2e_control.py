@@ -881,7 +881,9 @@ class E2EControlTest(unittest.TestCase):
         self.assertIn("python3 -m unittest discover -s hack -p 'test_e2e_*.py'", candidate)
         for forbidden in ("token", "secrets.", "artifact", "continue-on-error"):
             self.assertNotIn(forbidden, candidate.lower())
-        self.assertGreaterEqual(workflow.count("github.actor == 'github-actions[bot]'"), 5)
+        for job in ("e2e-selection", "build-e2e-binaries", "netpol-path-filter"):
+            with self.subTest(job=job):
+                self.assertIn("github.actor == 'github-actions[bot]'", blocks[job].split("    steps:\n")[0])
         self.assertGreaterEqual(workflow.count("needs: e2e-selection"), 2)
         self.assertNotIn('entry["selection"] != "smoke"', workflow)
         self.assertIn("contents: read", workflow)
