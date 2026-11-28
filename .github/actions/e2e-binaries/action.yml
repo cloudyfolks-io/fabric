@@ -8,14 +8,34 @@ inputs:
     default: "."
     description: Checked out E2E source directory
   artifact-name:
-    default: ""
-    description: Same-run artifact for this exact source tree
+    default: "legacy-unnamed-artifact"
+    description: Same-run artifact name exported by the producer; only the legacy executor may omit it
 runs:
   using: composite
   steps:
+    - name: Resolve the producer artifact name
+      id: artifact
+      shell: bash
+      env:
+        ARTIFACT_NAME: ${{ inputs.artifact-name }}
+        SOURCE_SHA: ${{ inputs.source-sha }}
+        SOURCE_DIR: ${{ inputs.directory }}
+        LC_ALL: C
+      run: |
+        set -euo pipefail
+        # The legacy trusted executor omitted the name for its base-source suites.
+        if [[ "$ARTIFACT_NAME" = legacy-unnamed-artifact &&
+              "$GITHUB_WORKFLOW_SHA" = 91f3cc14492e781fb082f2f5c1b871f49952ea69 &&
+              "$GITHUB_WORKFLOW_REF" = "$GITHUB_REPOSITORY/.github/workflows/build-x86-image.yaml@refs/heads/x86-e2e/"* &&
+              "$GITHUB_EVENT_NAME" = workflow_dispatch && "$GITHUB_ACTOR" = 'github-actions[bot]' &&
+              "$SOURCE_SHA" = "$GITHUB_WORKFLOW_SHA" && "$SOURCE_DIR" = test/e2e/source ]]; then
+          ARTIFACT_NAME="e2e-binaries-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+        fi
+        [[ "$ARTIFACT_NAME" =~ ^e2e-(hosted-)?binaries-"$GITHUB_RUN_ID"-[1-9][0-9]*$ ]]
+        printf 'name=%s\n' "$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
     - uses: actions/download-artifact@v8
       with:
-        name: ${{ inputs.artifact-name || format('e2e-binaries-{0}-{1}', github.run_id, github.run_attempt) }}
+        name: ${{ steps.artifact.outputs.name }}
         path: ${{ runner.temp }}/e2e-binaries
     - shell: bash
       env:

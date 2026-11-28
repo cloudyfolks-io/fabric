@@ -16,9 +16,11 @@ upgrade, and router load balancing. Run Scheduled E2E with `full` to include
 IPv6, dual-stack, and the extended compatibility suites. The weekly full run
 enables Valgrind in six suites.
 
-E2E binaries are built once per executor attempt and distributed in a tar
-artifact, preserving executable permissions. A source SHA and SHA256 manifest
-are checked before reuse; missing/tampered/stale binaries fail rather than
+The binary producer preserves executable permissions in one-day tar artifacts.
+Failed-job reruns use the exact artifact names exported by the producer.
+If the artifacts expire, the producer must run again.
+A source SHA and SHA256 manifest are checked before reuse;
+missing/tampered/stale binaries fail rather than
 silently rebuilding. Artifacts are never fetched from other runs or caches.
 Go caches remain an optimization, not evidence that a binary exists.
 
