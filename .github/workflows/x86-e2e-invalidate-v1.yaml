@@ -11,6 +11,18 @@ on:
         description: Pull request HEAD with the existing fixed check
         required: true
         type: string
+      pushedRef:
+        description: Original pushed branch (omitted by older v1 senders)
+        required: false
+        type: string
+      pushedSHA:
+        description: After SHA from the original push event
+        required: false
+        type: string
+      forcedPush:
+        description: Whether the original push was forced
+        required: false
+        type: boolean
 
 permissions:
   contents: read
@@ -35,4 +47,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ inputs.prNumber }}
           HEAD_SHA: ${{ inputs.headSHA }}
+          PUSHED_REF: ${{ inputs.pushedRef }}
+          PUSHED_SHA: ${{ inputs.pushedSHA }}
+          FORCED_PUSH: ${{ toJSON(inputs.forcedPush) }}
         run: python3 -I hack/e2e_invalidate.py

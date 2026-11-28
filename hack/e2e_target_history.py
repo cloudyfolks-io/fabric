@@ -26,6 +26,16 @@ def positive_id(value):
     return type(value) is int and value > 0
 
 
+def issued_generation(check):
+    lines = ((check.get("output") or {}).get("text") or "").splitlines()
+    markers = [line for line in lines if line.startswith("x86-e2e-gate")]
+    if len(markers) == 1:
+        match = re.fullmatch(r"x86-e2e-gate request=[0-9a-f]{64} approval=([1-9][0-9]*)", markers[0])
+        if match:
+            return int(match[1])
+    return None
+
+
 def timestamp(value):
     if not isinstance(value, str) or not re.fullmatch(
         r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z", value
@@ -90,10 +100,19 @@ class TargetHistory:
                     self.edits.add(edit)
             self.pages.append(comments)
 
+        self.superseded = set()
+        superseded_ids = set()
         for check in checks:
             output = check["output"]
             lines = (output.get("text") or "").splitlines()
             summary = (output.get("summary") or "").splitlines()
+            if summary[:1] == [control.supersededSummary]:
+                superseded_ids.add(check["id"])
+                if summary[1:]:
+                    generation = issued_generation(check)
+                    if not generation or summary[1:] != [f"{control.supersededPrefix}{generation}"]:
+                        raise ValueError("invalid superseded approval marker")
+                    self.superseded.add(generation)
             if check.get("conclusion") == "action_required" and summary[:1] == [control.invalidationSummary]:
                 lines.extend(summary[1:])
                 if not any(line.startswith(control.cutoffPrefix) for line in summary[1:]):
@@ -105,12 +124,15 @@ class TargetHistory:
             cutoffs.extend(timestamp(line[len(control.cutoffPrefix):]) for line in lines
                            if line.startswith(control.cutoffPrefix))
         self.invalidation = max(cutoffs, default=None)
+        if superseded_ids and max(check["id"] for check in checks) in superseded_ids:
+            raise ValueError("the current issued check is missing from the API response")
         self.latest_edit = max(self.edits, default=None)
         if self.invalidation and (self.latest_edit is None or self.invalidation > self.latest_edit):
             self.latest_edit = self.invalidation
 
     def is_fresh(self, generation):
-        if self.unknown_cutoff or not positive_id(generation) or generation not in self.command_dates:
+        if (self.unknown_cutoff or not positive_id(generation) or generation not in self.command_dates
+                or generation in self.superseded):
             return False
         return self.latest_edit is None or self.command_dates[generation] > self.latest_edit
 

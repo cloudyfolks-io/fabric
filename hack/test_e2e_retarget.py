@@ -42,7 +42,8 @@ class RetargetTest(unittest.TestCase):
             "output": {"title": "x86 E2E gate", "text": MARKER, "summary": "Passed"},
         }
 
-    def run_handler(self, checks, live=None, timeline=None, edited_at=EDIT["created_at"], recorder_result="success"):
+    def run_handler(self, checks, live=None, timeline=None, edited_at=EDIT["created_at"], recorder_result="success",
+                    push=None, tip=None, comparison=None, forced_push="false", legacy_refresh=False):
         self.api.reset_mock()
 
         def respond(path, *args, **kwargs):
@@ -53,6 +54,17 @@ class RetargetTest(unittest.TestCase):
                 return [{"check_runs": []}, {"check_runs": checks}]
             if path == "pulls/7":
                 return live or self.pr
+            base = (live or self.pr)["base"]
+            if path == f"git/ref/heads/{base['ref']}":
+                if isinstance(tip, Exception):
+                    raise tip
+                self.assertIsNotNone(tip)
+                return {"ref": f"refs/heads/{base['ref']}", "object": {"type": "commit", "sha": tip}}
+            if push and path == f"compare/{push[1]}...{base['sha']}?per_page=1":
+                if isinstance(comparison, Exception):
+                    raise comparison
+                self.assertIsNotNone(comparison)
+                return {"status": comparison}
             if path == "issues/7/timeline?per_page=100":
                 self.assertEqual(args, ("--paginate", "--slurp"))
                 if isinstance(timeline, Exception):
@@ -65,11 +77,17 @@ class RetargetTest(unittest.TestCase):
                 item = dict(RECORDED, id=200 + len(self.comments), created_at=self.now, body=kwargs["body"]["body"])
                 self.comments.append(item)
                 return item
-            self.assertEqual((path, args), ("check-runs/17", ("--method", "PATCH", "--input", "-")))
+            self.assertIn(path, {f"check-runs/{check['id']}" for check in checks})
+            self.assertEqual(args, ("--method", "PATCH", "--input", "-"))
             return {}
 
         self.api.side_effect = respond
         env = {"PR_NUMBER": "7", "HEAD_SHA": HEAD, "GITHUB_REPOSITORY": "org/repo"}
+        if legacy_refresh:
+            env["VERIFY_PUSH_TARGET"] = "true"
+        if push is not None:
+            env["PUSHED_REF"], env["PUSHED_SHA"] = push
+            env["FORCED_PUSH"] = forced_push
         if edited_at is not None:
             env["EDITED_AT"] = edited_at
             env["RECORDER_RESULT"] = recorder_result
@@ -151,33 +169,133 @@ class RetargetTest(unittest.TestCase):
         older = dict(EDIT, created_at="2026-11-19T08:00:00Z")
         self.assertFalse(self.run_handler([self.check], timeline=[[older], [EDIT, COMMAND]]))
 
+    def test_push_requires_coherent_pr_branch_tip_and_revision(self):
+        ref = self.pr["base"]["ref"]
+        other = "3" * 40
+        unavailable = subprocess.CalledProcessError(1, "gh api")
+        self.check["output"]["text"] = f"{MARKER}\n{TARGET}"
+        for push, tip, comparison, keep in [
+            ((ref, BASE), BASE, None, True),              # Original push.
+            ((ref, other), other, None, False),           # PR still shows previous base.
+            ((ref, BASE), other, None, False),            # Later push; PR still shows original event.
+            ((ref, other), BASE, "behind", False),        # Both live reads lag the push.
+            ((ref, other), BASE, "ahead", True),          # Fresh success after a later push.
+            ((ref, other), BASE, "diverged", False),      # Ambiguous force-push.
+            ((ref, other), BASE, unavailable, False),
+            ((ref, BASE), unavailable, None, False),
+            ((ref, "0" * 40), BASE, None, False),
+            (("main", other), BASE, None, True),          # PR retargeted; original push no longer applies.
+            (("", ""), BASE, None, True),                 # Older v1 sender.
+            (("", ""), other, None, False),
+            ((ref, ""), BASE, None, False),
+            (("", BASE), BASE, None, False),
+            (("../main", BASE), BASE, None, False),
+        ]:
+            with self.subTest(push=push, tip=tip, comparison=comparison):
+                patches = self.run_handler([self.check], timeline=[[EDIT, COMMAND]], edited_at=None,
+                                           push=push, tip=tip, comparison=comparison)
+                if keep:
+                    self.assertEqual(patches, [])
+                else:
+                    update, = patches
+                    self.assertEqual(update.kwargs["body"]["conclusion"], "action_required")
+                    self.assertEqual(update.kwargs["body"]["output"]["text"], self.check["output"]["text"])
+        # After a rewind, the old tip also descends from the pushed revision.
+        patch, = self.run_handler([self.check], edited_at=None, push=(ref, other), tip=BASE, forced_push="true")
+        self.assertEqual(patch.kwargs["body"]["conclusion"], "action_required")
+
+    def test_lagging_push_invalidates_once_and_expires_the_old_generation(self):
+        self.check["output"]["text"] = f"{MARKER}\n{TARGET}"
+        waiting = "The latest authorized x86 E2E approval is waiting for its trusted executor."
+        push = (self.pr["base"]["ref"], "3" * 40)
+        for conclusion, summary in [("success", "Passed"), ("action_required", waiting)]:
+            check = dict(self.check, conclusion=conclusion, output=dict(self.check["output"], summary=summary))
+            update, = self.run_handler([check], edited_at=None, push=push, tip=push[1])
+            check.update(update.kwargs["body"], completed_at=self.now)
+            self.assertEqual(check["output"]["summary"], control.invalidationSummary)
+            self.assertFalse(self.run_handler([check], edited_at=None, push=push, tip=push[1]))
+            fresh = dict(COMMAND, id=125, created_at="2026-11-20T08:01:01Z")
+            history = invalidate.TargetHistory([[COMMAND, fresh]], [check])
+            self.assertFalse(history.is_fresh(COMMAND["id"]))
+            self.assertTrue(history.is_fresh(fresh["id"]))
+
+    def test_only_current_check_sets_a_cutoff_on_tip_failure_or_retarget(self):
+        fresh = dict(COMMAND, id=125, created_at="2026-11-20T08:00:05Z")
+        timeline = [[COMMAND, dict(EDIT, created_at="2026-11-20T08:00:02Z"), fresh]]
+        waiting = "The latest authorized x86 E2E approval is waiting for its trusted executor."
+        self.check.update(conclusion="action_required", output=dict(
+            self.check["output"], text=f"{MARKER}\n{TARGET.replace('release-1.2', 'main')}", summary=waiting))
+        current = dict(self.check, id=19, output=dict(self.check["output"],
+                       text=f"{MARKER.replace('123', '125')}\n{TARGET}"))
+        for tip, current_valid in [(BASE, True), (subprocess.CalledProcessError(1, "gh api"), False)]:
+            checks = copy.deepcopy([current, self.check])
+            writes = self.run_handler(checks, timeline=timeline, edited_at=None, push=("main", BASE), tip=tip)
+            expected = {17: f"{control.supersededSummary}\n{control.supersededPrefix}{COMMAND['id']}"}
+            if not current_valid:
+                expected[19] = control.invalidationSummary
+            for write in writes:
+                identifier = int(write.args[0].split("/")[-1])
+                body = write.kwargs["body"]
+                self.assertEqual(body["conclusion"], "action_required")
+                self.assertEqual(body["output"]["summary"], expected.pop(identifier))
+                next(c for c in checks if c["id"] == identifier).update(body, completed_at=self.now)
+            self.assertEqual(expected, {})
+            snapshot = invalidate.TargetHistory(timeline, checks)
+            self.assertEqual(snapshot.is_fresh(fresh["id"]), current_valid)
+            self.assertFalse(snapshot.is_fresh(COMMAND["id"]))
+            self.assertEqual(snapshot.invalidation is None, current_valid)
+            self.assertFalse(self.run_handler(checks, timeline=timeline, edited_at=None, push=("main", BASE), tip=BASE))
+
+    def test_two_issued_ids_for_the_same_generation(self):
+        self.check["output"]["text"] = f"{MARKER}\n{TARGET}"
+        old = dict(self.check, id=16, status="in_progress", conclusion=None)
+        update, = self.run_handler([old, self.check], edited_at=None, legacy_refresh=True, tip=BASE,
+                                   timeline=[[COMMAND]])
+        self.assertEqual(update.args[0], "check-runs/16")
+        old.update(update.kwargs["body"], completed_at=self.now)
+        self.assertTrue(invalidate.TargetHistory([[COMMAND]], [old, self.check]).is_fresh(COMMAND["id"]))
+        with self.assertRaisesRegex(ValueError, "current issued check is missing"):
+            invalidate.TargetHistory([[COMMAND]], [old])
+        self.assertFalse(control.matchesIssuedCheck(old, "a" * 64, COMMAND["id"], BASE, "release-1.2"))
+
     def test_release_refresh_addresses_only_the_dedicated_receiver(self):
         dispatcher = (WORKFLOWS / "x86-e2e-dispatcher.yaml").read_text()
         refresh = dispatcher.split("\n  invalidate-base:\n")[1].split("\n  dispatch:\n")[0]
         post = refresh[refresh.index("gh api --method POST"):refresh.index("done < open-pulls.tsv")]
         self.assertLess(refresh.index("bash hack/verify-e2e-receiver-v1.sh"), refresh.index(post))
         self.assertNotIn("x86-e2e-gate.yaml", refresh)
+        self.assertIn("PUSHED_REF: ${{ github.event.ref }}", refresh)
+        self.assertIn("PUSHED_SHA: ${{ github.event.after }}", refresh)
+        self.assertIn("FORCED_PUSH: ${{ toJSON(github.event.forced) }}", refresh)
+        self.assertIn("state=open&base=$pushedRef&per_page=100", refresh)
+        setup = refresh[refresh.index("set -euo pipefail"):refresh.index("proof=$(bash hack/verify-e2e-receiver-v1.sh")]
         with tempfile.TemporaryDirectory() as directory:
             event = Path(directory, "event.json")
             event.write_text(json.dumps({"repository": {"default_branch": "main"}}))
             args = subprocess.check_output(
-                ["bash", "-eu", "-c", 'gh() { printf "%s\\n" "$@"; }\n' + post],
-                env=dict(os.environ, GITHUB_EVENT_PATH=str(event), GITHUB_REF_NAME="release-1.2",
+                ["bash", "-eu", "-c", 'gh() { printf "%s\\n" "$@"; }\n' + setup + post],
+                cwd=WORKFLOWS.parents[1],
+                env=dict(os.environ, GITHUB_EVENT_PATH=str(event), PUSHED_REF="refs/heads/release-1.2",
                          GITHUB_REPOSITORY="org/repo", prNumber="7", headSHA=HEAD,
-                         GITHUB_SHA=BASE, catalogRevision="b" * 64), text=True,
+                         PUSHED_SHA=BASE, FORCED_PUSH="false"), text=True,
             ).splitlines()
         self.assertEqual(args[:4], ["api", "--method", "POST", "repos/org/repo/actions/workflows/x86-e2e-invalidate-v1.yaml/dispatches"])
-        self.assertEqual(args[4::2], ["-f"] * 3)
+        self.assertEqual(args[4::2], ["-f"] * 6)
         fields = dict(field.split("=", 1) for field in args[5::2])
         self.assertEqual(fields, {
             "ref": "main", "inputs[prNumber]": "7", "inputs[headSHA]": HEAD,
+            "inputs[pushedRef]": "release-1.2", "inputs[pushedSHA]": BASE, "inputs[forcedPush]": "false",
         })
         receiver = (WORKFLOWS / "x86-e2e-invalidate-v1.yaml").read_text()
         declarations = receiver.split("\n    inputs:\n", 1)[1].split("\npermissions:", 1)[0]
         required = re.findall(r"^      (\w+):\n(?:        [^\n]*\n)*?        required: true$", declarations, re.M)
-        self.assertEqual({f"inputs[{name}]" for name in required}, fields.keys() - {"ref"})
+        self.assertEqual(set(required), {"prNumber", "headSHA"})
+        self.assertIn("FORCED_PUSH: ${{ toJSON(inputs.forcedPush) }}", receiver)
+        for field, variable in (("pushedRef", "PUSHED_REF"), ("pushedSHA", "PUSHED_SHA")):
+            self.assertIn(f"{variable}: ${{{{ inputs.{field} }}}}", receiver)
         job, approval = WORKFLOW.split("\n  base-refresh:\n")[1].split("\n  approval:\n")
         self.assertIn("inputs.executorRunID == '' && inputs.baseRefresh", job)
+        self.assertIn('VERIFY_PUSH_TARGET: "true"', job)
         self.assertIn("group: x86-e2e-required-gate-${{ inputs.prNumber }}-${{ inputs.headSHA }}", job)
         self.assertEqual(job.split("    steps:\n")[1].strip(), "- *checkout_control\n      - *reconcile_target")
         self.assertEqual(re.findall(r"^  ([\w-]+):$", receiver.split("\njobs:\n")[1], re.M), ["invalidate"])
@@ -196,46 +314,86 @@ class RetargetTest(unittest.TestCase):
         })
         pending = dict(RECORDED, body=intent)
         self.assertEqual(len(control.approvalIntents(self.pr, catalog, [[COMMAND, pending]])), 1)
-        update, = self.run_handler([self.check], timeline=[[COMMAND, pending]], edited_at=None)
+        update, = self.run_handler([self.check], timeline=[[COMMAND, pending]], edited_at=None, legacy_refresh=True,
+                                   tip=BASE)
         self.assertEqual(update.kwargs["body"]["conclusion"], "action_required")
-        self.assertEqual(len(self.api.call_args_list), 3)  # Read check and live PR, then PATCH the check.
+        self.assertEqual(len(self.api.call_args_list), 4)  # Read check, live PR and branch tip; PATCH the check.
         self.check["output"]["text"] = f"{MARKER}\n{TARGET}"
-        self.assertFalse(self.run_handler([self.check], timeline=[[COMMAND, pending]], edited_at=None))
+        self.assertFalse(self.run_handler([self.check], timeline=[[COMMAND, pending]], edited_at=None,
+                                          legacy_refresh=True, tip=BASE))
+        for tip in ("3" * 40, subprocess.CalledProcessError(1, "gh api")):
+            update, = self.run_handler([self.check], edited_at=None, legacy_refresh=True, tip=tip)
+            self.assertEqual(update.kwargs["body"]["conclusion"], "action_required")
 
     def test_release_requires_active_versioned_receiver_on_default_branch(self):
         root = WORKFLOWS.parents[1]
         selection = (WORKFLOWS / "build-x86-image.yaml").read_text()
-        self.assertIn('git show "refs/remotes/origin/$DEFAULT_BRANCH:hack/verify-e2e-receiver-v1.sh" | bash', selection)
+        selection = textwrap.dedent(selection.split("      - name: Require the installed main receiver")[1]
+                                    .split("        run: |\n")[1].split("\n      - name:")[0])
+        sender = (WORKFLOWS / "x86-e2e-dispatcher.yaml").read_text()
+        sender = "set -euo pipefail\nproof=$(bash" + sender.split("proof=$(bash", 1)[1].split("          gh api", 1)[0]
+        path = ".github/workflows/x86-e2e-invalidate-v1.yaml"
+        verifier = root / "hack/verify-e2e-receiver-v1.sh"
+        receiver = (root / path).read_text()
         with tempfile.TemporaryDirectory() as folder:
             work = Path(folder)
-            paths = (".github/workflows/x86-e2e-invalidate-v1.yaml", "hack/e2e_invalidate.py")
+            (work / "hack").symlink_to(root / "hack")
             (work / "event.json").write_text(json.dumps({"repository": {"default_branch": "main"}}))
+            git = work / "git"
+            git.write_text("""#!/bin/bash
+set -eu
+[[ "$*" == 'show refs/remotes/origin/main:hack/verify-e2e-receiver-v1.sh' ]]
+if [[ "$MODE" == old-verifier ]]; then echo 'exit 0'; else cat "$VERIFIER"; fi
+""")
+            git.chmod(0o755)
             gh = work / "gh"
             gh.write_text("""#!/bin/bash
 set -eu
 case "$2" in
-  repos/org/repo/git/ref/heads/main) echo "$TREE" ;;
+  repos/org/repo/git/ref/heads/main)
+    if [[ "$MODE" == moved && -f tip-read ]]; then TREE=$OTHER; fi
+    touch tip-read
+    jq -n --arg sha "$TREE" '{ref:"refs/heads/main",object:{type:"commit",sha:$sha}}' ;;
   repos/org/repo/contents/*)
     path=${2#repos/org/repo/contents/}
     [[ "$path" == *"?ref=$TREE" ]] || exit 1
     path=${path%\\?ref=*}
     [[ "$MODE" != "$path" ]] || exit 1
-    jq -n --arg path "$path" '{path: $path, type: "file", size: 900}' ;;
+    jq -n --arg path "$path" --rawfile source active.yaml \
+      '{path: $path, type: "file", size: 900, encoding: "base64", content: ($source|@base64)}' ;;
   repos/org/repo/actions/workflows/x86-e2e-invalidate-v1.yaml)
-    jq -n --arg state "$MODE" '{path: ".github/workflows/x86-e2e-invalidate-v1.yaml", state: $state}' ;;
+    state=active
+    if [[ "$MODE" == disabled ]]; then state=disabled_manually; fi
+    jq -n --arg state "$state" '{path: ".github/workflows/x86-e2e-invalidate-v1.yaml", state: $state}' ;;
   *) exit 2 ;;
 esac
 """)
             gh.chmod(0o755)
-            for mode in (*paths, "disabled_manually", "active"):
-                with self.subTest(mode=mode):
-                    result = subprocess.run(
-                        ["bash", str(root / "hack/verify-e2e-receiver-v1.sh")], cwd=work,
-                        env=dict(os.environ, PATH=f"{work}:{os.environ['PATH']}", GITHUB_REPOSITORY="org/repo",
-                                 GITHUB_EVENT_PATH=str(work / "event.json"), MODE=mode, TREE=BASE),
-                        capture_output=True, text=True,
-                    )
-                    self.assertEqual(result.returncode == 0, mode == "active", result.stderr)
+            old = receiver[:receiver.index("      pushedRef:")] + receiver[receiver.index("\npermissions:"):]
+            for mode, source in [
+                ("active", receiver), ("old-verifier", receiver), ("pre-push-receiver", old),
+                ("wrong-trigger", receiver.replace("workflow_dispatch:", "workflow_call:")),
+                ("wrong-event-key", receiver.replace("on:\n", "true:\n", 1)),
+                ("wrong-type", receiver.replace("type: boolean", "type: string")),
+                ("new-required", receiver.replace("required: false", "required: true")),
+                ("legacy-default", receiver.replace("      pushedSHA:\n", "      pushedSHA:\n        default: old\n")),
+                ("missing-sha", receiver.replace("      pushedSHA:", "      unrelated:")),
+                (path, receiver), ("hack/e2e_invalidate.py", receiver), ("disabled", receiver), ("moved", receiver),
+            ]:
+                (work / "active.yaml").write_text(source)
+                for caller, script in [("selection", selection), ("sender", sender)]:
+                    with self.subTest(mode=mode, caller=caller):
+                        (work / "tip-read").unlink(missing_ok=True)
+                        result = subprocess.run(
+                            ["bash", "-c", script], cwd=work,
+                            env=dict(os.environ, PATH=f"{work}:{os.environ['PATH']}", GITHUB_REPOSITORY="org/repo",
+                                     GITHUB_EVENT_PATH=str(work / "event.json"), DEFAULT_BRANCH="main",
+                                     VERIFIER=str(verifier), MODE=mode, TREE=BASE, OTHER=HEAD),
+                            capture_output=True, text=True,
+                        )
+                        # The sender carries its own upgraded verifier in the pinned push checkout.
+                        self.assertEqual(result.returncode == 0, mode == "active" or
+                                         (mode == "old-verifier" and caller == "sender"), result.stderr)
 
     def test_unsuccessful_recorder_invalidates_even_fresh_green_once(self):
         self.check["output"]["text"] = f"{MARKER}\n{TARGET}"
@@ -285,7 +443,7 @@ esac
 
     def test_legacy_sibling_cutoff_matches_discovery(self):
         self.check["output"]["text"] = f"{MARKER}\n{TARGET}"
-        blocked = dict(self.check, id=18, conclusion="action_required",
+        blocked = dict(self.check, id=16, conclusion="action_required",
                        output=dict(self.check["output"], summary=control.invalidationSummary))
         for completed, stale in [(EDIT["created_at"], False), (COMMAND["created_at"], True), (None, True)]:
             checks = [self.check, dict(blocked, completed_at=completed)]

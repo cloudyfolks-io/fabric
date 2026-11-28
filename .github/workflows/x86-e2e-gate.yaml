@@ -748,6 +748,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       PR_NUMBER: ${{ inputs.prNumber }}
       HEAD_SHA: ${{ inputs.headSHA }}
+      VERIFY_PUSH_TARGET: "true"
     steps:
       - *checkout_control
       - *reconcile_target
@@ -976,11 +977,23 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY/contents/.github/e2e-selection.json?ref=$BASE_SHA" \
             --jq '.content' | base64 --decode > final-catalog.json
           python3 hack/e2e_target_history.py comments "$PR_NUMBER" --head "$HEAD_SHA" --generations-file fresh-generations.json --check-file fixed-check.json --cutoff-file cutoff.txt --persist-cutoff > final-comments.json
+          requireIssuedCheck() {
+            python3 - "$RUN_REQUEST_KEY" "$APPROVAL_GENERATION" "$BASE_SHA" "$BASE_REF" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          from e2e_control import matchesIssuedCheck
+
+          if not matchesIssuedCheck(json.loads(Path("fixed-check.json").read_text()), *sys.argv[1:]):
+              sys.exit("executor does not match the current issued check")
+          PY
+          }
           # Check the original event before merging intents or recovering another run.
           if [ "$RUN_ACTION" = reservation ] || [ "$RUN_ACTION" = approval ]; then
             jq -e --argjson generation "$SOURCE_APPROVAL_GENERATION" 'index($generation) != null' fresh-generations.json > /dev/null
           elif [ "$RUN_EVENT" = workflow_dispatch ]; then
             jq -e --argjson generation "$APPROVAL_GENERATION" 'index($generation) != null' fresh-generations.json > /dev/null
+            requireIssuedCheck
           fi
           python3 - <<'PY' > final-request.json
           import json
@@ -1591,13 +1604,6 @@ jobs:
             fi
           fi
           externalId="x86-e2e-pr-$PR_NUMBER-$HEAD_SHA"
-          existingCheck=$(gh api --paginate --slurp \
-            -H 'Accept: application/vnd.github+json' \
-            "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/check-runs?check_name=x86-e2e%20%2F%20required-gate&filter=all&per_page=100" \
-            | jq -c --arg externalId "$externalId" \
-              '[.[].check_runs[] | select(.app.slug == "github-actions" and
-                .name == "x86-e2e / required-gate" and .external_id == $externalId)] | max_by(.id) // {}')
-          checkId=$(jq -r '.id // empty' <<< "$existingCheck")
           gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" > write-pull-request.json
           writeState=$(jq -r '.state' write-pull-request.json)
           writeHead=$(jq -r '.head.sha' write-pull-request.json)
@@ -1610,7 +1616,8 @@ jobs:
             python3 -I hack/e2e_invalidate.py
             exit 0
           fi
-          python3 hack/e2e_target_history.py comments "$PR_NUMBER" --head "$HEAD_SHA" --generations-file fresh-generations.json --cutoff-file write-cutoff.txt > /dev/null
+          python3 hack/e2e_target_history.py comments "$PR_NUMBER" --head "$HEAD_SHA" --generations-file fresh-generations.json --check-file fixed-check.json --cutoff-file write-cutoff.txt > /dev/null
+          checkId=$(jq -r '.id // empty' fixed-check.json)
           if ! cmp -s cutoff.txt write-cutoff.txt; then
             echo 'The invalidation cutoff changed during reconciliation; discarding this mutation.'
             exit 0
@@ -1620,6 +1627,9 @@ jobs:
           elif [ "$CONCLUSION" = success ] || [ "$RUN_ACTION" = approval ] || \
                [ "$RUN_EVENT" = workflow_dispatch ]; then
             jq -e --argjson generation "$APPROVAL_GENERATION" 'index($generation) != null' fresh-generations.json > /dev/null
+          fi
+          if [ "$RUN_EVENT" = workflow_dispatch ] && [ "$RUN_ACTION" = completed ]; then
+            requireIssuedCheck
           fi
           jq -n \
             --arg name 'x86-e2e / required-gate' \

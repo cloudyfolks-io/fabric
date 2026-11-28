@@ -9,7 +9,7 @@ import sys
 
 # The workflow uses -I and checks out the pinned workflow revision.
 sys.path.append(str(Path(__file__).resolve().parent))
-from e2e_target_history import TargetHistory, control, retarget_marker, timestamp, trusted_bot
+from e2e_target_history import TargetHistory, control, issued_generation, retarget_marker, timestamp, trusted_bot
 
 
 def api(path, *args, body=None, paginate=False):
@@ -38,6 +38,27 @@ def record_failure(number, edited_at):
     return cutoff
 
 
+def verify_push_target(ref, sha):
+    pushed_ref = os.environ.get("PUSHED_REF", "")
+    pushed_sha = os.environ.get("PUSHED_SHA", "")
+    if (pushed_ref or pushed_sha) and not (
+        control.supportedBaseRef(pushed_ref) and re.fullmatch(r"[0-9a-f]{40}", pushed_sha)
+    ):
+        raise ValueError("invalid original push target")
+    if not control.supportedBaseRef(ref) or not re.fullmatch(r"[0-9a-f]{40}", sha):
+        raise ValueError("invalid PR target")
+    tip = api(f"git/ref/heads/{ref}")
+    if tip["ref"] != f"refs/heads/{ref}" or tip["object"]["type"] != "commit" or tip["object"]["sha"] != sha:
+        raise ValueError("PR target does not match the branch tip")
+    if ref == pushed_ref and sha != pushed_sha:
+        # Both live reads could still show the pre-push tip. Require proof of a later revision.
+        if pushed_sha == "0" * 40 or os.environ.get("FORCED_PUSH") != "false":
+            raise ValueError("cannot order revisions after deletion or force-push")
+        comparison = api(f"compare/{pushed_sha}...{sha}?per_page=1")
+        if comparison["status"] != "ahead":
+            raise ValueError("branch tip is not a descendant of the pushed revision")
+
+
 def invalidate(number, head, edited_at=None):
     if not re.fullmatch(r"[1-9][0-9]*", number) or not re.fullmatch(r"[0-9a-f]{40}", head):
         raise ValueError("invalid fixed check identity")
@@ -47,11 +68,16 @@ def invalidate(number, head, edited_at=None):
         return
     errors = (subprocess.CalledProcessError, OSError, ValueError, KeyError, TypeError, AttributeError)
     target = None
+    push_receiver = (os.environ.get("VERIFY_PUSH_TARGET") == "true"
+                     or "PUSHED_REF" in os.environ or "PUSHED_SHA" in os.environ)
     try:
         live = api(f"pulls/{number}")
         if live["state"] != "open" or live["head"]["sha"] != head:
             return
-        target = f"x86-e2e-target base={live['base']['sha']} ref={live['base']['ref']}"
+        ref, sha = live["base"]["ref"], live["base"]["sha"]
+        if push_receiver:
+            verify_push_target(ref, sha)
+        target = f"x86-e2e-target base={sha} ref={ref}"
     except errors as error:
         print(f"Could not verify live target: {type(error).__name__}")
     history = None
@@ -66,33 +92,42 @@ def invalidate(number, head, edited_at=None):
         except errors as error:
             record_error = error
 
+    current = max(checks, key=lambda check: check["id"], default={})
+    current_generation = issued_generation(current)
+    invalidation = control.invalidationSummary
+    if cutoff:
+        invalidation += f"\n{control.cutoffPrefix}{cutoff}"
     for check in checks:
         conclusion = check["conclusion"]
         output = check["output"]
         lines = (output["text"] or "").splitlines()
         bindings = [line for line in lines if line.startswith("x86-e2e-target ")]
-        waiting = (failed and conclusion == "action_required" and output["summary"]
+        waiting = (conclusion == "action_required" and output["summary"]
                    == "The latest authorized x86 E2E approval is waiting for its trusted executor.")
-        if conclusion == "action_required" and not waiting and not record_error:
+        summary = invalidation
+        if check["id"] != current["id"]:
+            # A sibling cannot set a PR-wide time cutoff or erase an existing one.
+            if conclusion == "action_required" and not waiting:
+                continue
+            summary = control.supersededSummary
+            generation = issued_generation(check)
+            if generation and generation != current_generation:
+                summary += f"\n{control.supersededPrefix}{generation}"
+        elif conclusion == "action_required" and not (waiting and (failed or push_receiver)) and not record_error:
             continue
-        if bindings == [target] and not record_error:
+        elif bindings == [target] and not record_error:
             if not waiting and conclusion not in {"success", "skipped", "neutral"}:
                 continue
-            markers = [line for line in lines if line.startswith("x86-e2e-gate")]
-            match = len(markers) == 1 and re.fullmatch(
-                r"x86-e2e-gate request=[0-9a-f]{64} approval=([1-9][0-9]*)", markers[0])
-            if (waiting or conclusion == "success") and match:
+            generation = issued_generation(check)
+            if (waiting or conclusion == "success") and generation:
                 try:
                     if history is None:
                         history = TargetHistory(api(f"issues/{number}/timeline?per_page=100", paginate=True), checks)
                     expected = cutoff or edited_at
-                    if (expected is None or timestamp(expected) in history.edits) and history.is_fresh(int(match[1])):
+                    if (expected is None or timestamp(expected) in history.edits) and history.is_fresh(generation):
                         continue
                 except errors as error:
                     print(f"Could not verify retarget evidence: {type(error).__name__}")
-        summary = control.invalidationSummary
-        if cutoff:
-            summary += f"\n{control.cutoffPrefix}{cutoff}"
         api(f"check-runs/{check['id']}", "--method", "PATCH", "--input", "-", body={
             "status": "completed",
             "conclusion": "action_required",
