@@ -1,6 +1,10 @@
 import copy
+import json
+import os
 import subprocess
+import tempfile
 import unittest
+from unittest.mock import patch
 
 import e2e_gate_recovery as recovery
 
@@ -67,6 +71,42 @@ class GateRecoveryTest(unittest.TestCase):
     def testRecoveredRunRequiresFreshOriginalApproval(self):
         self.timeline.append([{"event": "base_ref_changed", "created_at": "2026-11-01T09:00:01Z"}])
         self.assertIsNone(self.find())
+
+    def testScheduleRecoversOnlyIndependentExecutorAlongsideStaleTarget(self):
+        repository = self.run["head_repository"]["full_name"]
+        head = self.pullRequest["head"]["sha"]
+        staleRun = {
+            **self.run, "id": 43, "head_branch": "x86-e2e/pr-40-a-1002-d-2001",
+            "display_title": f"x86-e2e pr=40 head={head} approval=1002 generation=2001 groups=- full=0 ref=main",
+        }
+        staleWaiting = copy.deepcopy(self.check)
+        staleWaiting["id"] = 102
+        staleWaiting["external_id"] = f"x86-e2e-pr-40-{head}"
+        staleWaiting["output"]["text"] = staleWaiting["output"]["text"].replace("approval=1001", "approval=1002")
+        legacy = {**staleWaiting, "id": 99, "conclusion": "success", "output": {"text": ""}}
+
+        def gh(command, text):
+            path = command[-1].removeprefix(f"repos/{repository}/")
+            if path == "pulls?state=open&per_page=100":
+                response = [[{**self.pullRequest, "number": number} for number in (40, 39)]]
+            elif path == "actions/workflows/build-x86-image.yaml/runs?event=workflow_dispatch&status=completed&per_page=100":
+                response = {"workflow_runs": runs}
+            elif path.startswith("commits/"):
+                response = [{"check_runs": [legacy, staleWaiting, self.check]}]
+            elif path == "pulls/40":
+                response = self.pullRequest
+            elif path == "issues/40/timeline?per_page=100":
+                response = [[{**self.timeline[0][0], "id": 1002}]]
+            else:
+                response = self.api(path, paginate="--paginate" in command)
+            return json.dumps(response)
+
+        for runs, expected in (([staleRun, self.run], ["runId=42"]), ([staleRun], [])):
+            with self.subTest(expected=expected), tempfile.NamedTemporaryFile(mode="r") as output:
+                with patch.dict(os.environ, GITHUB_REPOSITORY=repository, GITHUB_OUTPUT=output.name), \
+                     patch.object(subprocess, "check_output", gh):
+                    recovery.main()
+                self.assertEqual(output.read().splitlines(), ["stalePR=40", f"staleHead={head}", *expected])
 
     def testRejectUntrustedOrIncompleteRuns(self):
         changes = [

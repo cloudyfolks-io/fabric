@@ -172,7 +172,8 @@ jobs:
   reconcile-legacy:
     name: Reconcile an existing check with a missing or stale target
     needs: discover
-    if: needs.discover.outputs.stalePR != ''
+    # Keep a discovered invalidation if the subsequent executor lookup fails.
+    if: ${{ !cancelled() && needs.discover.outputs.stalePR != '' }}
     runs-on: ubuntu-24.04
     permissions:
       contents: read

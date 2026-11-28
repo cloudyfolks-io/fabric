@@ -45,7 +45,7 @@ def staleTarget(pulls, api):
     return None
 
 
-def pendingExecutor(runs, repository, api):
+def pendingExecutor(runs, repository, api, stalePR=None):
     for run in sorted(runs, key=lambda item: item["id"], reverse=True):
         if (
             run.get("status") != "completed"
@@ -59,7 +59,7 @@ def pendingExecutor(runs, repository, api):
             metadata = e2eControl.parseExecutorRunName(run["display_title"])
         except (ValueError, KeyError):
             continue
-        if run.get("head_branch") != e2eControl.executorHeadBranch(metadata):
+        if metadata["prNumber"] == stalePR or run.get("head_branch") != e2eControl.executorHeadBranch(metadata):
             continue
         pullRequest = api(f"pulls/{metadata['prNumber']}")
         if (
@@ -96,12 +96,11 @@ def main():
     with open(os.environ["GITHUB_OUTPUT"], "a") as stream:
         if stale:
             stream.write(f"stalePR={stale[0]}\nstaleHead={stale[1]}\n")
-            return
         runs = api(
             "actions/workflows/build-x86-image.yaml/runs"
             "?event=workflow_dispatch&status=completed&per_page=100"
         )["workflow_runs"]
-        runId = pendingExecutor(runs, repository, api)
+        runId = pendingExecutor(runs, repository, api, stalePR=stale[0] if stale else None)
         if runId is not None:
             stream.write(f"runId={runId}\n")
 
