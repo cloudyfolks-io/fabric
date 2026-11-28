@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import json
 import os
 import re
@@ -268,23 +269,25 @@ class RetargetTest(unittest.TestCase):
         self.assertIn("PUSHED_SHA: ${{ github.event.after }}", refresh)
         self.assertIn("FORCED_PUSH: ${{ toJSON(github.event.forced) }}", refresh)
         self.assertIn("state=open&base=$pushedRef&per_page=100", refresh)
-        setup = refresh[refresh.index("set -euo pipefail"):refresh.index("proof=$(bash hack/verify-e2e-receiver-v1.sh")]
+        setup = refresh[refresh.index("set -euo pipefail"):refresh.index("bash hack/verify-e2e-receiver-v1.sh")]
         with tempfile.TemporaryDirectory() as directory:
             event = Path(directory, "event.json")
             event.write_text(json.dumps({"repository": {"default_branch": "main"}}))
             args = subprocess.check_output(
-                ["bash", "-eu", "-c", 'gh() { printf "%s\\n" "$@"; }\n' + setup + post],
+                ["bash", "-eu", "-c", 'gh() { if [[ $2 == repos/org/repo/git/ref/heads/main ]]; then '
+                 'echo "$TREE"; else printf "%s\\n" "$@"; fi; }\n' + setup + post],
                 cwd=WORKFLOWS.parents[1],
                 env=dict(os.environ, GITHUB_EVENT_PATH=str(event), PUSHED_REF="refs/heads/release-1.2",
                          GITHUB_REPOSITORY="org/repo", prNumber="7", headSHA=HEAD,
-                         PUSHED_SHA=BASE, FORCED_PUSH="false"), text=True,
+                         PUSHED_SHA=BASE, FORCED_PUSH="false", TREE="4" * 40), text=True,
             ).splitlines()
         self.assertEqual(args[:4], ["api", "--method", "POST", "repos/org/repo/actions/workflows/x86-e2e-invalidate-v1.yaml/dispatches"])
-        self.assertEqual(args[4::2], ["-f"] * 6)
+        self.assertEqual(args[4::2], ["-f"] * 7)
         fields = dict(field.split("=", 1) for field in args[5::2])
         self.assertEqual(fields, {
             "ref": "main", "inputs[prNumber]": "7", "inputs[headSHA]": HEAD,
             "inputs[pushedRef]": "release-1.2", "inputs[pushedSHA]": BASE, "inputs[forcedPush]": "false",
+            "inputs[verifiedReceiverSHA]": "4" * 40,
         })
         receiver = (WORKFLOWS / "x86-e2e-invalidate-v1.yaml").read_text()
         declarations = receiver.split("\n    inputs:\n", 1)[1].split("\npermissions:", 1)[0]
@@ -299,7 +302,15 @@ class RetargetTest(unittest.TestCase):
         self.assertIn("group: x86-e2e-required-gate-${{ inputs.prNumber }}-${{ inputs.headSHA }}", job)
         self.assertEqual(job.split("    steps:\n")[1].strip(), "- *checkout_control\n      - *reconcile_target")
         self.assertEqual(re.findall(r"^  ([\w-]+):$", receiver.split("\njobs:\n")[1], re.M), ["invalidate"])
-        self.assertEqual(re.findall(r"^        run: (.+)$", receiver, re.M), ["python3 -I hack/e2e_invalidate.py"])
+        self.assertEqual(re.findall(r"^        run: (.+)$", receiver, re.M), ["|"])
+        self.assertIn("VERIFIED_RECEIVER_SHA: ${{ inputs.verifiedReceiverSHA }}", receiver)
+        reconcile = textwrap.dedent(receiver.split("        run: |\n")[1])
+        for revision, allowed in [(BASE, True), ("", True), (HEAD, False), ("bad", False)]:
+            result = subprocess.run(["bash", "-eu", "-c", 'python3() { printf "%s\\n" "$*"; }\n' + reconcile],
+                                    env=dict(os.environ, VERIFIED_RECEIVER_SHA=revision, GITHUB_WORKFLOW_SHA=BASE),
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode == 0, allowed)
+            self.assertEqual(result.stdout.strip(), "-I hack/e2e_invalidate.py" if allowed else "")
         self.assertEqual(re.findall(r"^  ([\w-]+): write$", receiver, re.M), ["checks"])
         self.assertIn("queue: max", receiver)
         self.assertIn("!inputs.baseRefresh", approval.split("    outputs:")[0])
@@ -331,19 +342,33 @@ class RetargetTest(unittest.TestCase):
         selection = textwrap.dedent(selection.split("      - name: Require the installed main receiver")[1]
                                     .split("        run: |\n")[1].split("\n      - name:")[0])
         sender = (WORKFLOWS / "x86-e2e-dispatcher.yaml").read_text()
-        sender = "set -euo pipefail\nproof=$(bash" + sender.split("proof=$(bash", 1)[1].split("          gh api", 1)[0]
+        verify = "default=$(jq -er"
+        sender = "set -euo pipefail\n" + verify + sender.split(verify, 1)[1].split("          gh api", 1)[0]
         path = ".github/workflows/x86-e2e-invalidate-v1.yaml"
         verifier = root / "hack/verify-e2e-receiver-v1.sh"
-        receiver = (root / path).read_text()
+        handler = "hack/e2e_invalidate.py"
+        history = "hack/e2e_target_history.py"
+        control = "hack/e2e_control.py"
+        selector = "hack/e2e_selector.py"
+        tree_sha = "4" * 40
+
+        def blob(data):
+            return hashlib.sha1(f"blob {len(data)}\0".encode() + data).hexdigest()
+
+        entries = {name: dict(path=name, type="blob", sha=blob((root / name).read_bytes()),
+                              mode="100755" if os.access(root / name, os.X_OK) else "100644")
+                   for name in (path, handler, history, control, selector)}
         with tempfile.TemporaryDirectory() as folder:
             work = Path(folder)
-            (work / "hack").symlink_to(root / "hack")
+            (work / "hack").mkdir()
+            local_verifier = work / "hack/verify-e2e-receiver-v1.sh"
+            main_verifier = work / "main-verifier.sh"
             (work / "event.json").write_text(json.dumps({"repository": {"default_branch": "main"}}))
             git = work / "git"
             git.write_text("""#!/bin/bash
 set -eu
 [[ "$*" == 'show refs/remotes/origin/main:hack/verify-e2e-receiver-v1.sh' ]]
-if [[ "$MODE" == old-verifier ]]; then echo 'exit 0'; else cat "$VERIFIER"; fi
+cat "$MAIN_VERIFIER"
 """)
             git.chmod(0o755)
             gh = work / "gh"
@@ -351,16 +376,17 @@ if [[ "$MODE" == old-verifier ]]; then echo 'exit 0'; else cat "$VERIFIER"; fi
 set -eu
 case "$2" in
   repos/org/repo/git/ref/heads/main)
+    if [[ "${3:-}" == --jq ]]; then
+      [[ "$4" == .object.sha ]]
+      if [[ "$MODE" == changed-before-verify ]]; then echo "$OTHER"; else echo "$TREE"; fi
+      exit 0
+    fi
     if [[ "$MODE" == moved && -f tip-read ]]; then TREE=$OTHER; fi
     touch tip-read
     jq -n --arg sha "$TREE" '{ref:"refs/heads/main",object:{type:"commit",sha:$sha}}' ;;
-  repos/org/repo/contents/*)
-    path=${2#repos/org/repo/contents/}
-    [[ "$path" == *"?ref=$TREE" ]] || exit 1
-    path=${path%\\?ref=*}
-    [[ "$MODE" != "$path" ]] || exit 1
-    jq -n --arg path "$path" --rawfile source active.yaml \
-      '{path: $path, type: "file", size: 900, encoding: "base64", content: ($source|@base64)}' ;;
+  "repos/org/repo/git/commits/$TREE")
+    jq -n --arg sha "$TREE" --arg tree "$TREE_SHA" '{sha:$sha,tree:{sha:$tree}}' ;;
+  "repos/org/repo/git/trees/$TREE_SHA?recursive=1") cat active-tree.json ;;
   repos/org/repo/actions/workflows/x86-e2e-invalidate-v1.yaml)
     state=active
     if [[ "$MODE" == disabled ]]; then state=disabled_manually; fi
@@ -369,31 +395,62 @@ case "$2" in
 esac
 """)
             gh.chmod(0o755)
-            old = receiver[:receiver.index("      pushedRef:")] + receiver[receiver.index("\npermissions:"):]
-            for mode, source in [
-                ("active", receiver), ("old-verifier", receiver), ("pre-push-receiver", old),
-                ("wrong-trigger", receiver.replace("workflow_dispatch:", "workflow_call:")),
-                ("wrong-event-key", receiver.replace("on:\n", "true:\n", 1)),
-                ("wrong-type", receiver.replace("type: boolean", "type: string")),
-                ("new-required", receiver.replace("required: false", "required: true")),
-                ("legacy-default", receiver.replace("      pushedSHA:\n", "      pushedSHA:\n        default: old\n")),
-                ("missing-sha", receiver.replace("      pushedSHA:", "      unrelated:")),
-                (path, receiver), ("hack/e2e_invalidate.py", receiver), ("disabled", receiver), ("moved", receiver),
-            ]:
-                (work / "active.yaml").write_text(source)
+            env = dict(os.environ, PATH=f"{work}:{os.environ['PATH']}", GITHUB_REPOSITORY="org/repo",
+                       GITHUB_EVENT_PATH=str(work / "event.json"), DEFAULT_BRANCH="main",
+                       MAIN_VERIFIER=str(main_verifier), TREE=BASE, TREE_SHA=tree_sha, OTHER=HEAD)
+            # Real b8f86f9c Git object IDs; only the deployed tree varies, never the caller checkout.
+            old = {path: "252794fa4b3fca0f6204b1b528ea8f2e41fab049",
+                   handler: "d216b8e1fc5e1458c6e941fe42b300df22e88dc3",
+                   history: "6c53eca2c480945dbd20133713de13b8957920d5",
+                   control: "314c26468bf46c57a39c130e7a54cd257c6ad0db"}
+            wrong_entrypoint = (root / path).read_text().replace("hack/e2e_invalidate.py", "hack/other.py")
+            cases = [("active", {}), ("unrelated-change", {}), ("disabled", {}), ("moved", {}), ("changed-before-verify", {}),
+                     ("truncated", {}), ("wrong-tree", {}), ("other-handler", {path: blob(wrong_entrypoint.encode())}),
+                     ("pre-push-receiver", old), ("mixed-handler", {handler: old[handler]}),
+                     ("mixed-history", {history: old[history]}), ("mixed-control", {control: old[control]}),
+                     ("mixed-selector", {selector: HEAD}), ("old-workflow", {path: old[path]}),
+                     ("missing-handler", {handler: None}), ("missing-import", {selector: None}),
+                     ("symlink", {}), ("shadow-package", {}), ("old-default-verifier", {}),
+                     ("old-release-verifier", {}), ("old-default-mixed", {handler: old[handler]}), ("malformed-receipt", {}),
+                     ("failed-verifier", {})]
+            for mode, changes in cases:
+                files = [dict(item, sha=changes.get(name, item["sha"]))
+                         for name, item in entries.items() if changes.get(name, True) is not None]
+                if mode == "symlink":
+                    next(item for item in files if item["path"] == handler)["mode"] = "120000"
+                if mode == "shadow-package":
+                    files.append(dict(path="hack/e2e_target_history/__init__.py", type="blob", sha=HEAD, mode="100644"))
+                if mode == "unrelated-change":
+                    files.append(dict(path="docs/release.md", type="blob", sha=HEAD, mode="100644"))
+                (work / "active-tree.json").write_text(json.dumps({
+                    "sha": HEAD if mode == "wrong-tree" else tree_sha, "truncated": mode == "truncated", "tree": files,
+                }))
+                bad_verifier = {"malformed-receipt": "printf 'x86-e2e-invalidate-v1:push-runtime-1\\n\\n'",
+                                "failed-verifier": "echo 'x86-e2e-invalidate-v1:push-runtime-1'; exit 1"}.get(mode)
+                local_verifier.write_text(bad_verifier or verifier.read_text())
+                main_verifier.write_text(bad_verifier or verifier.read_text())
+                schema_only = "echo 'x86-e2e-invalidate-v1:push-target'"
+                if mode in {"old-default-verifier", "old-default-mixed"}:
+                    main_verifier.write_text(schema_only)
+                if mode == "old-release-verifier":
+                    local_verifier.write_text(schema_only)
                 for caller, script in [("selection", selection), ("sender", sender)]:
                     with self.subTest(mode=mode, caller=caller):
                         (work / "tip-read").unlink(missing_ok=True)
                         result = subprocess.run(
                             ["bash", "-c", script], cwd=work,
-                            env=dict(os.environ, PATH=f"{work}:{os.environ['PATH']}", GITHUB_REPOSITORY="org/repo",
-                                     GITHUB_EVENT_PATH=str(work / "event.json"), DEFAULT_BRANCH="main",
-                                     VERIFIER=str(verifier), MODE=mode, TREE=BASE, OTHER=HEAD),
+                            env=dict(env, MODE=mode),
                             capture_output=True, text=True,
                         )
-                        # The sender carries its own upgraded verifier in the pinned push checkout.
-                        self.assertEqual(result.returncode == 0, mode == "active" or
-                                         (mode == "old-verifier" and caller == "sender"), result.stderr)
+                        allowed = (mode in {"active", "unrelated-change"} or (mode, caller) in {
+                            ("old-default-verifier", "sender"), ("old-release-verifier", "selection"),
+                            ("changed-before-verify", "selection"),
+                        })
+                        self.assertEqual(result.returncode == 0, allowed, result.stderr)
+                if mode == "active":
+                    receipt = subprocess.check_output(["bash", str(local_verifier)], cwd=work,
+                                                      env=dict(env, MODE=mode), text=True)
+                    self.assertEqual(receipt, "x86-e2e-invalidate-v1:push-target\n")
 
     def test_unsuccessful_recorder_invalidates_even_fresh_green_once(self):
         self.check["output"]["text"] = f"{MARKER}\n{TARGET}"

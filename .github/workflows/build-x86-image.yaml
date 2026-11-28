@@ -325,8 +325,8 @@ jobs:
         run: |
           set -euo pipefail
           # The target branch may predate this check. Execute only the trusted default-branch verifier.
-          proof=$(git show "refs/remotes/origin/$DEFAULT_BRANCH:hack/verify-e2e-receiver-v1.sh" | bash)
-          [[ "$proof" == x86-e2e-invalidate-v1:push-target ]]
+          git show "refs/remotes/origin/$DEFAULT_BRANCH:hack/verify-e2e-receiver-v1.sh" | bash -s -- --push-runtime |
+            cmp -s - <(echo 'x86-e2e-invalidate-v1:push-runtime-1')
 
       - name: Compute the selection plan
         env:

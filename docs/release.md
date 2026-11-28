@@ -39,9 +39,21 @@ Keep the v1 endpoint and verifier available until all v1 senders are retired.
 Install the receiver with optional `pushedRef`, `pushedSHA` and `forcedPush` inputs on
 `main` before enabling senders that include them. Earlier v1 senders omit
 these inputs; the upgraded receiver still checks the current branch tip.
-The pre-v1 `baseRefresh` endpoint checks that tip too. The verifier uses
-Python 3 with PyYAML to read the dispatch schema at the active default-branch
-revision. Both release selection and the sender require its push-target receipt.
+The pre-v1 `baseRefresh` endpoint checks that tip too. The push-aware sender
+and release selector require the `--push-runtime` receipt. At one pinned
+default-branch revision, the verifier checks the exact Git blobs for the
+workflow (including input declarations, checkout and invocation), handler,
+and its three repository imports. A schema-only verifier cannot issue this
+receipt. The new verifier still serves the no-argument receipt to old callers
+when the installed files match. New senders pass the verified revision in
+`verifiedReceiverSHA`; the receiver checks its own workflow SHA before invoking
+the handler. If `main` moved between verification and dispatch, rerun the
+base-update sender against the new receiver. Earlier v1 senders omit this input.
+
+Before changing any pinned file, qualify the complete replacement set. Deploy
+verifiers accepting both complete sets on `main` and enabled release branches
+before switching the receiver on `main`. Retire the old set after rollout.
+Upgrade schema-only release senders before relying on the stronger check.
 For a delayed delivery on the same branch, keeping a newer success requires
 proof that the current tip descends from the pushed revision. After an
 ambiguous force-push, authorize again for the current target.

@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # The release sender only uses this versioned default-branch endpoint.
 set -euo pipefail
+case "$#:${1:-}" in
+  0:) proof=x86-e2e-invalidate-v1:push-target ;; # Existing v1 callers.
+  1:--push-runtime|2:--push-runtime) proof=x86-e2e-invalidate-v1:push-runtime-1 ;;
+  *) exit 2 ;;
+esac
 receiver=.github/workflows/x86-e2e-invalidate-v1.yaml
 repo="repos/$GITHUB_REPOSITORY"
 default=$(jq -er '.repository.default_branch' "$GITHUB_EVENT_PATH")
@@ -10,34 +15,33 @@ tip() {
 }
 revision=$(tip)
 [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
-path=hack/e2e_invalidate.py
-gh api "$repo/contents/$path?ref=$revision" | jq -e --arg path "$path" \
-  '.type == "file" and .path == $path and .size > 0' > /dev/null
-gh api "$repo/contents/$receiver?ref=$revision" | jq -er --arg path "$receiver" \
-  'select(.type == "file" and .path == $path and .encoding == "base64") | .content' \
-  | base64 --decode | python3 -I -c '
-import sys
-import yaml
-
-class WorkflowLoader(yaml.SafeLoader):
-    # GitHub treats "on" as a literal key. Only true/false are implicit booleans.
-    yaml_implicit_resolvers = {
-        key: [(tag, rule) for tag, rule in rules if tag != "tag:yaml.org,2002:bool" or key in "tTfF"]
-        for key, rules in yaml.SafeLoader.yaml_implicit_resolvers.items()
-    }
-
-inputs = yaml.load(sys.stdin, Loader=WorkflowLoader)["on"]["workflow_dispatch"]["inputs"]
-expected = {"prNumber": "number", "headSHA": "string", "pushedRef": "string",
-            "pushedSHA": "string", "forcedPush": "boolean"}
-if (any(inputs[name]["type"] != kind for name, kind in expected.items())
-        or any(inputs[name].get("default", "") != "" for name in ("pushedRef", "pushedSHA"))
-        or inputs["forcedPush"].get("default", False) is not False
-        or any(spec.get("required", False) is not False for name, spec in inputs.items()
-               if name not in {"prNumber", "headSHA"})):
-    sys.exit("incompatible x86 E2E receiver dispatch inputs")
-'
+if [[ $# == 2 ]]; then
+  [[ "$revision" == "$2" ]]
+fi
+tree=$(gh api "$repo/git/commits/$revision" | jq -er --arg revision "$revision" \
+  'select(.sha == $revision) | .tree.sha')
+[[ "$tree" =~ ^[0-9a-f]{40}$ ]]
+# The qualified receiver workflow pins its checkout and checks the verified revision before invoking this handler.
+# Approve complete sets only; independently allowlisting versions of each file would allow untested mixtures.
+gh api "$repo/git/trees/$tree?recursive=1" | jq -e --arg tree "$tree" '
+  # A package, compiled extension or checked-in bytecode can shadow a .py import.
+  def shadows_import: test("^hack/__pycache__($|/)") or
+                      test("^hack/e2e_(target_history|control|selector)($|/|\\.[^/]*so$)");
+  {
+    ".github/workflows/x86-e2e-invalidate-v1.yaml": "11aec3780d00581c3511d96742815b4b2bbd5b73",
+    "hack/e2e_invalidate.py": "59177329f50af0a2c26cf8b34c67ed2f3fa77a86",
+    "hack/e2e_target_history.py": "97b52afe0dfb2c9d13f5d505f4d3c0efe8f485ee",
+    "hack/e2e_control.py": "9b58f6986f5a42132bdb2c638d5233edff908da6",
+    "hack/e2e_selector.py": "13923dd4c4c9f7e0127a7700da851af0f589fbcf"
+  } as $qualified |
+  .sha == $tree and .truncated == false and
+  all(.tree[].path; shadows_import | not) and
+  (INDEX(.tree[]; .path) as $files | all($qualified | to_entries[];
+    $files[.key] as $file | $file.type == "blob" and
+    ($file.mode == "100644" or $file.mode == "100755") and $file.sha == .value))
+' > /dev/null
 gh api "$repo/actions/workflows/${receiver##*/}" | jq -e --arg path "$receiver" \
   '.path == $path and .state == "active"' > /dev/null
 confirmed=$(tip)
 [[ "$confirmed" == "$revision" ]]
-echo 'x86-e2e-invalidate-v1:push-target'
+echo "$proof"

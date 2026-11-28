@@ -115,8 +115,10 @@ jobs:
           [[ "$PUSHED_REF" == refs/heads/* && "$PUSHED_SHA" =~ ^[0-9a-f]{40}$ ]]
           pushedRef=${PUSHED_REF#refs/heads/}
           python3 hack/e2e_control.py base-ref --ref="$pushedRef" > /dev/null
-          proof=$(bash hack/verify-e2e-receiver-v1.sh)
-          [[ "$proof" == x86-e2e-invalidate-v1:push-target ]]
+          default=$(jq -er '.repository.default_branch' "$GITHUB_EVENT_PATH")
+          receiverSHA=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$default" --jq '.object.sha')
+          bash hack/verify-e2e-receiver-v1.sh --push-runtime "$receiverSHA" |
+            cmp -s - <(echo 'x86-e2e-invalidate-v1:push-runtime-1')
           gh api --paginate \
             "repos/$GITHUB_REPOSITORY/pulls?state=open&base=$pushedRef&per_page=100" \
             --jq '.[] | [.number, .head.sha] | @tsv' > open-pulls.tsv
@@ -130,12 +132,13 @@ jobs:
             [ "$hasGate" = true ] || continue
             gh api --method POST \
               "repos/$GITHUB_REPOSITORY/actions/workflows/x86-e2e-invalidate-v1.yaml/dispatches" \
-              -f ref="$(jq -r '.repository.default_branch' "$GITHUB_EVENT_PATH")" \
+              -f "ref=$default" \
               -f "inputs[prNumber]=$prNumber" \
               -f "inputs[headSHA]=$headSHA" \
               -f "inputs[pushedRef]=$pushedRef" \
               -f "inputs[pushedSHA]=$PUSHED_SHA" \
-              -f "inputs[forcedPush]=$FORCED_PUSH"
+              -f "inputs[forcedPush]=$FORCED_PUSH" \
+              -f "inputs[verifiedReceiverSHA]=$receiverSHA"
           done < open-pulls.tsv
 
   dispatch:
