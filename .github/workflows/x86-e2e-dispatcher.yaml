@@ -106,12 +106,18 @@ jobs:
           persist-credentials: false
 
       - name: Block fixed gates bound to the previous base revision
+        env:
+          PUSHED_REF: ${{ github.event.ref }}
+          PUSHED_SHA: ${{ github.event.after }}
+          FORCED_PUSH: ${{ toJSON(github.event.forced) }}
         run: |
           set -euo pipefail
-          python3 hack/e2e_control.py base-ref --ref="$GITHUB_REF_NAME" > /dev/null
+          [[ "$PUSHED_REF" == refs/heads/* && "$PUSHED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          pushedRef=${PUSHED_REF#refs/heads/}
+          python3 hack/e2e_control.py base-ref --ref="$pushedRef" > /dev/null
           bash hack/verify-e2e-receiver-v1.sh
           gh api --paginate \
-            "repos/$GITHUB_REPOSITORY/pulls?state=open&base=$GITHUB_REF_NAME&per_page=100" \
+            "repos/$GITHUB_REPOSITORY/pulls?state=open&base=$pushedRef&per_page=100" \
             --jq '.[] | [.number, .head.sha] | @tsv' > open-pulls.tsv
           while IFS=$'\t' read -r prNumber headSHA; do
             [ -n "$prNumber" ] || continue
@@ -125,7 +131,10 @@ jobs:
               "repos/$GITHUB_REPOSITORY/actions/workflows/x86-e2e-invalidate-v1.yaml/dispatches" \
               -f ref="$(jq -r '.repository.default_branch' "$GITHUB_EVENT_PATH")" \
               -f "inputs[prNumber]=$prNumber" \
-              -f "inputs[headSHA]=$headSHA"
+              -f "inputs[headSHA]=$headSHA" \
+              -f "inputs[pushedRef]=$pushedRef" \
+              -f "inputs[pushedSHA]=$PUSHED_SHA" \
+              -f "inputs[forcedPush]=$FORCED_PUSH"
           done < open-pulls.tsv
 
   dispatch:

@@ -36,6 +36,12 @@ Other CI runs pull the published tags with `make pull-base`.
    sender still addresses its old gate; installing a receiver cannot redirect it.
 
 Keep the v1 endpoint and verifier available until all v1 senders are retired.
+Install the receiver with optional `pushedRef`, `pushedSHA` and `forcedPush` inputs on
+`main` before enabling senders that include them. Earlier v1 senders omit
+these inputs; the upgraded receiver still checks the current branch tip.
+For a delayed delivery on the same branch, keeping a newer success requires
+proof that the current tip descends from the pushed revision. After an
+ambiguous force-push, authorize again for the current target.
 Introduce incompatible changes under a new endpoint version.
 
 If the receiver was disabled or rollout was interrupted, restore it first,

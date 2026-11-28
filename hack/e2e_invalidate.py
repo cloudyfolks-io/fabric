@@ -38,6 +38,27 @@ def record_failure(number, edited_at):
     return cutoff
 
 
+def verify_push_target(ref, sha):
+    pushed_ref = os.environ.get("PUSHED_REF", "")
+    pushed_sha = os.environ.get("PUSHED_SHA", "")
+    if (pushed_ref or pushed_sha) and not (
+        control.supportedBaseRef(pushed_ref) and re.fullmatch(r"[0-9a-f]{40}", pushed_sha)
+    ):
+        raise ValueError("invalid original push target")
+    if not control.supportedBaseRef(ref) or not re.fullmatch(r"[0-9a-f]{40}", sha):
+        raise ValueError("invalid PR target")
+    tip = api(f"git/ref/heads/{ref}")
+    if tip["ref"] != f"refs/heads/{ref}" or tip["object"]["type"] != "commit" or tip["object"]["sha"] != sha:
+        raise ValueError("PR target does not match the branch tip")
+    if ref == pushed_ref and sha != pushed_sha:
+        # Both live reads could still show the pre-push tip. Require proof of a later revision.
+        if pushed_sha == "0" * 40 or os.environ.get("FORCED_PUSH") != "false":
+            raise ValueError("cannot order revisions after deletion or force-push")
+        comparison = api(f"compare/{pushed_sha}...{sha}?per_page=1")
+        if comparison["status"] != "ahead":
+            raise ValueError("branch tip is not a descendant of the pushed revision")
+
+
 def invalidate(number, head, edited_at=None):
     if not re.fullmatch(r"[1-9][0-9]*", number) or not re.fullmatch(r"[0-9a-f]{40}", head):
         raise ValueError("invalid fixed check identity")
@@ -47,11 +68,15 @@ def invalidate(number, head, edited_at=None):
         return
     errors = (subprocess.CalledProcessError, OSError, ValueError, KeyError, TypeError, AttributeError)
     target = None
+    push_receiver = "PUSHED_REF" in os.environ or "PUSHED_SHA" in os.environ
     try:
         live = api(f"pulls/{number}")
         if live["state"] != "open" or live["head"]["sha"] != head:
             return
-        target = f"x86-e2e-target base={live['base']['sha']} ref={live['base']['ref']}"
+        ref, sha = live["base"]["ref"], live["base"]["sha"]
+        if push_receiver:
+            verify_push_target(ref, sha)
+        target = f"x86-e2e-target base={sha} ref={ref}"
     except errors as error:
         print(f"Could not verify live target: {type(error).__name__}")
     history = None
@@ -71,7 +96,7 @@ def invalidate(number, head, edited_at=None):
         output = check["output"]
         lines = (output["text"] or "").splitlines()
         bindings = [line for line in lines if line.startswith("x86-e2e-target ")]
-        waiting = (failed and conclusion == "action_required" and output["summary"]
+        waiting = ((failed or push_receiver) and conclusion == "action_required" and output["summary"]
                    == "The latest authorized x86 E2E approval is waiting for its trusted executor.")
         if conclusion == "action_required" and not waiting and not record_error:
             continue
