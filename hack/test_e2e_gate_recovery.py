@@ -4,9 +4,11 @@ import os
 import subprocess
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import e2e_gate_recovery as recovery
+from e2e_selector import workflowJobBlocks
 
 
 class GateRecoveryTest(unittest.TestCase):
@@ -107,6 +109,32 @@ class GateRecoveryTest(unittest.TestCase):
                      patch.object(subprocess, "check_output", gh):
                     recovery.main()
                 self.assertEqual(output.read().splitlines(), ["stalePR=40", f"staleHead={head}", *expected])
+
+    def testFailedExecutorLookupPreservesStaleWriterOutputs(self):
+        repository = self.run["head_repository"]["full_name"]
+        self.check["conclusion"] = "skipped"
+
+        def gh(command, text):
+            path = command[-1].removeprefix(f"repos/{repository}/")
+            if path == "pulls?state=open&per_page=100":
+                return json.dumps([[{**self.pullRequest, "number": 39}]])
+            if path == "actions/workflows/build-x86-image.yaml/runs?event=workflow_dispatch&status=completed&per_page=100":
+                raise subprocess.CalledProcessError(1, command)
+            return json.dumps(self.api(path, paginate="--paginate" in command))
+
+        with tempfile.NamedTemporaryFile(mode="r") as output:
+            with patch.dict(os.environ, GITHUB_REPOSITORY=repository, GITHUB_OUTPUT=output.name), \
+                 patch.object(subprocess, "check_output", gh), self.assertRaises(subprocess.CalledProcessError):
+                recovery.main()
+            self.assertEqual(output.read().splitlines(), ["stalePR=39", f"staleHead={self.check['head_sha']}"])
+
+        workflow = Path(__file__).resolve().parents[1] / ".github/workflows/x86-e2e-gate.yaml"
+        jobs = workflowJobBlocks(workflow.read_text())
+        for key in ("stalePR", "staleHead"):
+            self.assertIn("      %s: ${{ steps.recovery.outputs.%s }}" % (key, key), jobs["discover"].splitlines())
+        writer = jobs["reconcile-legacy"].splitlines()
+        self.assertIn("    needs: discover", writer)
+        self.assertIn("    if: ${{ !cancelled() && needs.discover.outputs.stalePR != '' }}", writer)
 
     def testRejectUntrustedOrIncompleteRuns(self):
         changes = [
